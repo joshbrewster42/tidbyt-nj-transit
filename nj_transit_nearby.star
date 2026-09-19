@@ -221,7 +221,7 @@ def bus_departures(stop_code):
             continue
         out.append({
             "route": _clean(t.get("public_route")) or "?",
-            "dest": _clean(t.get("header")) or "",
+            "dest": pretty_dest(_clean(t.get("header"))),
             "when": when,
             "live": predicted != "",
         })
@@ -236,6 +236,35 @@ def _clean(value):
     if value == None:
         return ""
     return str(value).strip()
+
+# Long words the realtime feed spells out but a 64px row cannot afford. Light
+# rail gets the same treatment at build time; bus destinations arrive live, so
+# they have to be shortened here.
+DEST_ABBREV = [
+    ("Port Authority", "PABT"),
+    ("Transportation Center", "Trans Ctr"),
+    ("Transportation", "Trans"),
+    ("Terminal", "Term"),
+    ("Station", "Sta"),
+    ("Boulevard", "Blvd"),
+    ("Parkway", "Pkwy"),
+    ("Highway", "Hwy"),
+    ("Avenue", "Ave"),
+    ("Street", "St"),
+]
+
+def pretty_dest(text):
+    """'NEWARK PENN STATION' -> 'Newark Penn Sta'.
+
+    The API shouts every destination. Title case is both more legible and
+    narrower, since capitals are the widest glyphs in the font.
+    """
+    if not text:
+        return ""
+    out = text.title()
+    for pair in DEST_ABBREV:
+        out = out.replace(pair[0], pair[1])
+    return out
 
 # ---------------------------------------------------------------------------
 # Scheduled light rail departures
@@ -464,8 +493,30 @@ def message(stop, text):
         ),
     )
 
+def selected_stop(config):
+    """The stop the user picked, unwrapped.
+
+    A LocationBased selection does not arrive as the string we put in
+    schema.Option.value. Pixlet wraps it as {"display": ..., "value": ...},
+    so the real payload is one decode deeper. Handle both shapes: the wrapper
+    when someone picked from the list, and the bare object from a default or
+    from `pixlet render stop=...`.
+    """
+    raw = config.get("stop", DEFAULT_STOP)
+    if not raw:
+        raw = DEFAULT_STOP
+
+    stop = json.decode(raw)
+    if type(stop) == "dict" and "m" not in stop and "value" in stop:
+        stop = json.decode(stop["value"])
+
+    # Anything unrecognisable falls back rather than crashing the render.
+    if type(stop) != "dict" or "m" not in stop or "c" not in stop:
+        return json.decode(DEFAULT_STOP)
+    return stop
+
 def main(config):
-    stop = json.decode(config.get("stop", DEFAULT_STOP))
+    stop = selected_stop(config)
 
     tz = config.get("$tz", "America/New_York")
     now = time.now().in_location(tz)
@@ -514,6 +565,7 @@ def stop_options(location):
     for (dist_km, stop) in nearby_stops(lat, lon):
         routes = ", ".join(stop.get("r", [])[:4])
         kind = "Light Rail" if stop["m"] == "l" else "Bus"
+
         # Starlark's % operator has no precision specifier, so round by hand.
         tenths = int(dist_km * 0.621371 * 10 + 0.5)
         miles = "%d.%d" % (tenths // 10, tenths % 10)
