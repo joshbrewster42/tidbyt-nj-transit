@@ -258,6 +258,14 @@ def build_bus(zf):
                     stop_dirs[st["stop_id"]][direction][dest] += 1
     log("  bus: scanned %d stop_times rows" % seen)
 
+    # Seed the known-place set from every terminal in the feed, so labels can
+    # be shortened safely.
+    for per_direction in stop_dirs.values():
+        for counter in per_direction.values():
+            for name in counter:
+                KNOWN_PLACES.add(strip_label_noise(name))
+    log("  bus: %d distinct terminals" % len(KNOWN_PLACES))
+
     stops = []
     dests = {}
     skipped_no_code = 0
@@ -303,14 +311,76 @@ def build_bus(zf):
     return stops, dests
 
 
+# Operational detail that NJ Transit's own MyBus direction names leave off.
+# "Fairview Njt Garage" is the Fairview direction; the garage is where the bus
+# sleeps, not a place a rider is going.
+LABEL_NOISE = [
+    "NJT GARAGE", "GARAGE", "PARK RIDE", "PARK/RIDE", "P/R",
+    "PARK & RIDE", "TERMINAL", "TERM",
+]
+
+# Almost every New Jersey municipality is one or two words, so a name that long
+# is already the place itself and must be left alone. Anything longer carries
+# detail on top of a place -- "Fort Lee Linwood Park" -- and can be trimmed back
+# to the "Fort Lee" that MyBus shows.
+PLACE_NAME_WORDS = 2
+
+
+# Every terminal name in the feed. A long name can be shortened to its first
+# words only when that shorter form is itself somewhere a bus goes -- which is
+# what separates "Fort Lee Linwood Park" -> "Fort Lee" (Fort Lee is a real
+# terminal) from "West New York" -> "West New" (it is not).
+KNOWN_PLACES = set()
+
+
+def strip_label_noise(text):
+    up = text.upper()
+    for noise in LABEL_NOISE:
+        if up.endswith(" " + noise):
+            return text[: -(len(noise) + 1)].strip()
+    return text
+
+
+def direction_label(counter):
+    """The place a direction heads toward, named the way MyBus names it.
+
+    NJ Transit's own MyBus offers exactly two directions per route and names
+    them by place: the 159 is "New York" or "Fort Lee". Our busiest headsign is
+    "Fort Lee Linwood Park", which is the same direction said too precisely.
+
+    So take the busiest terminal, drop operational detail like a garage name,
+    then shorten toward a plainer place name -- but only to a form that is
+    itself a terminal somewhere in the network. That guard is what stops
+    "West New York" becoming "West New".
+    """
+    if not counter:
+        return ""
+
+    label = strip_label_noise(counter.most_common(1)[0][0])
+    words = label.split()
+
+    # A one or two word name is already a municipality -- "Englewood Cliffs"
+    # must not be shortened to "Englewood", which is a different town. Only
+    # names carrying extra detail beyond the place get trimmed.
+    if len(words) <= PLACE_NAME_WORDS:
+        return label
+
+    # Prefer the longest recognisable place, so "Fort Lee Linwood Park" lands
+    # on "Fort Lee" rather than "Fort".
+    for take in range(len(words) - 1, 0, -1):
+        candidate = " ".join(words[:take])
+        if candidate in KNOWN_PLACES:
+            return candidate
+    return label
+
+
 def summarise_directions(by_direction):
     """One entry per direction of travel, newest-busiest terminal as its label.
 
     Returns [{"l": label, "m": [terminals to match departures against]}].
-    The label is the terminal most trips actually run to, so the 158 outbound
-    reads "Fort Lee" rather than "Fort Lee Med West"; the match list keeps
-    every terminal in that direction, so a filter on it still catches the
-    Cliffside Park and Fairview runs that share the direction.
+    The label names the place, matching NJ Transit's own MyBus direction names;
+    the match list keeps every terminal in that direction, so a filter on it
+    still catches the Cliffside Park and Fairview runs that share the heading.
     """
     out = []
     for direction in sorted(by_direction.keys()):
@@ -319,7 +389,7 @@ def summarise_directions(by_direction):
             continue
         ranked = counter.most_common(MAX_MATCH_TERMINALS)
         out.append({
-            "l": ranked[0][0],
+            "l": direction_label(counter),
             "m": [name for (name, _count) in ranked],
         })
 

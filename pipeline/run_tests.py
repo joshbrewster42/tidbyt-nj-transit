@@ -22,6 +22,10 @@ import re
 import subprocess
 import sys
 import tempfile
+from collections import Counter
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import build_index
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 APP = ROOT / "nj_transit_nearby.star"
@@ -86,7 +90,49 @@ def main(config):
 '''
 
 
+# (terminals with trip counts, expected direction label). Ground truth is NJ
+# Transit's own MyBus, which offers two directions per route named by place:
+# the 158 and 159 read "Fort Lee", the 156 reads "Englewood Cliffs".
+LABEL_CASES = [
+    ({"Fort Lee Linwood Park": 130, "Fairview": 44, "Cliffside Park Winston Twrs": 7},
+     "Fort Lee"),
+    ({"Fort Lee Med West": 190, "Fort Lee Hudson Ter": 2, "Fort Lee": 1},
+     "Fort Lee"),
+    # Englewood and Englewood Cliffs are different towns; shortening one into
+    # the other sends a rider to the wrong place.
+    ({"Englewood Cliffs": 71, "Fort Lee": 9}, "Englewood Cliffs"),
+    # West New York is a municipality, not "West New" plus a suffix.
+    ({"West New York": 40}, "West New York"),
+    ({"North Bergen 91st Street": 30}, "North Bergen"),
+    ({"New York Port Authority": 66, "New York": 38}, "New York"),
+    # A garage is where the bus sleeps, not somewhere a rider goes.
+    ({"Fairview Njt Garage": 44}, "Fairview"),
+]
+
+
+def check_direction_labels():
+    """The label logic lives in Python, so test it directly."""
+    # Mirror the real build, where KNOWN_PLACES holds all 704 terminals in the
+    # feed: both the detailed names and the plain municipalities they sit in.
+    build_index.KNOWN_PLACES.clear()
+    for terminals, expected in LABEL_CASES:
+        for name in terminals:
+            build_index.KNOWN_PLACES.add(build_index.strip_label_noise(name))
+        build_index.KNOWN_PLACES.add(expected)
+
+    failures = 0
+    for terminals, expected in LABEL_CASES:
+        got = build_index.direction_label(Counter(terminals))
+        if got != expected:
+            failures += 1
+            print("FAIL label: %r -> %r (want %r)" % (
+                sorted(terminals, key=terminals.get, reverse=True)[0], got, expected))
+    return failures
+
+
 def main():
+    label_failures = check_direction_labels()
+
     src = APP.read_text()
     # The real main() would otherwise shadow the test one; Starlark forbids
     # rebinding a top-level name.
@@ -117,8 +163,8 @@ def main():
         print(output.strip())
         sys.exit("Could not read test results.")
 
-    failures = int(found.group(1))
-    total = len(MATCH_CASES) + len(WAIT_CASES) + 4
+    failures = int(found.group(1)) + label_failures
+    total = len(MATCH_CASES) + len(WAIT_CASES) + len(LABEL_CASES) + 4
     if failures:
         sys.exit("\n%d of %d assertions failed." % (failures, total))
     print("All %d assertions passed." % total)

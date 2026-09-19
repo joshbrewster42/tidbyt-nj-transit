@@ -158,8 +158,26 @@ the right side of the street is the whole job.
 The headings come from GTFS `direction_id`, which splits each route into its
 two directions of travel. One direction can still end at several terminals —
 the 159 outbound reaches Fort Lee, Cliffside Park and Fairview — so each
-direction is labelled with the terminal most trips actually run to, while
-keeping the full set to match departures against.
+direction is labelled with the place it heads toward, while keeping the full
+set of terminals to match departures against.
+
+**Labels are checked against NJ Transit's own naming.** MyBus offers exactly
+two directions per route, named by place
+(`selectdirection.jsp?route=159` → New York, Fort Lee), and the pipeline now
+agrees:
+
+| Route | MyBus | Pipeline |
+|---|---|---|
+| 156 | New York · Englewood Cliffs | New York · Englewood Cliffs |
+| 158 | New York · Fort Lee | New York · Fort Lee |
+| 159 | New York · Fort Lee | New York · Fort Lee |
+
+Getting there needed two rules. The busiest headsign is often too specific —
+the 159's is `Fort Lee Linwood Park` — so a name is trimmed back toward a
+plainer place. But trimming is only allowed down to a form that is *itself* a
+terminal somewhere in the network, and never below two words. Without the
+first rule `West New York` becomes `West New`; without the second,
+`Englewood Cliffs` becomes `Englewood`, which is a different town.
 
 A **Direction** dropdown appears only at stops that genuinely run both ways,
 which is where it earns its place. At the other 82% it would be a control with
