@@ -163,3 +163,29 @@ per row after the badge and the countdown. Two decisions follow from that:
 - **The route badge is dropped when it is redundant.** At a light rail platform
   every departure is the same line, so it moves to the header and the
   destinations get those pixels. At a bus stop served by six routes, it stays.
+
+---
+
+## Entering an address during development
+
+`pixlet serve` has **no address search** — it renders `schema.Location` as bare
+latitude/longitude inputs, and its "Locality" box is cosmetic (typing into it
+does not geocode). The realtime address search users expect lives in the Tidbyt
+**mobile app**, which is where `schema.Location` becomes a real map picker.
+
+To bridge that locally:
+
+```bash
+python3 pipeline/geocode.py --stops "1 Hudson Place, Hoboken, NJ"
+```
+
+It prints coordinates to paste into the **Stop** section, plus the stops the app
+would offer there — so you can check the picker without clicking through the UI.
+Pass coordinates instead of an address to skip the network entirely:
+
+```bash
+python3 pipeline/geocode.py --stops 40.7352 -74.0277
+```
+
+Geocoding uses OpenStreetMap Nominatim, so the address is sent to their servers.
+Nothing is stored locally.
