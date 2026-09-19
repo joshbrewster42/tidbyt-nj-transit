@@ -228,54 +228,66 @@ the device. Polling faster only re-serves cached data.
 
 ## Ferry
 
-NJ Transit runs no ferries — the Hudson crossings are **NY Waterway's**, and
-they are a separate feed:
+NJ Transit runs no ferries — the Hudson crossings are **NY Waterway's**. They
+publish through two unrelated platforms, and the choice matters:
 
 ```
-https://data.trilliumtransit.com/gtfs/nywaterway-nj-us/nywaterway-nj-us.zip
+https://nywaterway.connexionz.net/rtt/public/resource/gtfs.zip
 ```
 
-No registration. The widely cited `data.bytemark.co` S3 bucket is dead (403)
-and most links still point at it; the feed moved to Trillium.
+**Connexionz** is republished daily and covers today. 14 routes, all of them
+boats, 15 terminals, with real route names and headsigns.
 
-13 terminals, 9 on the NJ side. Port Imperial is the hub with 302 sailings a
-day; Hoboken, Paulus Hook, Lincoln Harbor, Liberty Harbor, Edgewater and South
-Amboy are the rest. No realtime exists, so ferry uses the same precomputed
-timetable path as light rail.
+**Trillium** (`data.trilliumtransit.com/gtfs/nywaterway-nj-us/…`) also serves
+NY Waterway and is the copy most catalogs point to, but it carries only the
+*next* booking. The copy fetched on 2026-09-19 covered `20261001`–`20270401` —
+valid GTFS describing nothing but the future, which would have shipped an empty
+ferry mode for twelve days. It also mixes boats with 19 free connector shuttle
+buses and has two fewer terminals.
 
-Three things about this feed are worth knowing before touching it:
+The much-cited `data.bytemark.co` S3 bucket is long dead (403), and most links
+on the web still point at it.
 
-- **No `route_short_name`, and every `trip_headsign` is blank.** Destinations
-  are derived from each trip's final stop instead.
-- **It mixes boats with buses.** 16 ferry routes (`route_type=4`) and 19 free
-  connector shuttles (`route_type=3`). Only the boats are imported.
-- **A terminal's name can lie.** The stop called "Port Imperial Ferry Terminal"
-  carries *zero* ferries — it is the shuttle bus bay. The boats leave from the
-  stop called plainly "Port Imperial".
+### Finding a feed when its URL dies
 
-### Feeds that describe only the future
+The MobilityData catalog CSV is public, needs no account, and lists the
+download URL plus a mirror for ~3,500 feeds:
 
-NY Waterway publishes one booking at a time and *replaces* the previous one, so
-a freshly downloaded feed can be entirely in the future. The copy fetched on
-2026-09-19 covered `20261001`–`20270401` and had no service for the next twelve
-days.
-
-That is valid GTFS and an easy way to ship a silently empty app, so the build
-warns:
-
-```
-WARNING: ferry has no service today (20260919). Its timetable starts
-20261001 -- the app will show 'no service' until then.
+```bash
+curl -sSL https://bit.ly/catalogs-csv | grep -i waterway
 ```
 
-### NYC Ferry is a different operator
+That is how the Connexionz feed was found after the bytemark URL started
+returning 403. Check it before concluding a feed is unavailable.
 
-`ferry.nyc` is NYC EDC/Hornblower, not NY Waterway. Its feed is open and even
-has GTFS-realtime, but all 50 of its landings are inside the five boroughs —
-**none in New Jersey** — so it is not used here.
+### Traps in this data
 
-**Seastreak** (Raritan Bayshore) has no working public feed: transitfeeds.com
-is defunct, mass.gov blocks automated fetches, and no Trillium path exists.
+- **Some sailings loop back to their origin.** Taking "the trip's last stop" as
+  the destination makes those look like they go nowhere, and they get dropped.
+  Walk back to the last call that differs from the current stop.
+- **A terminal's name can lie.** In the Trillium feed the stop called "Port
+  Imperial Ferry Terminal" carries *zero* ferries — it is the shuttle bus bay.
+- **Arrivals look like departures.** A boat terminating at your stop has a
+  departure_time too. Excluding calls with no distinct later stop removes them.
+
+### Realtime exists, but is out of reach
+
+NY Waterway publishes live GTFS-realtime, unauthenticated:
+
+```
+nywaterway.connexionz.net/rtt/public/utility/gtfsrealtime.aspx/tripupdate
+                                                              /vehicleposition
+                                                              /alert
+```
+
+All three are protobuf, and there is no JSON variant — the obvious `.json`
+paths are soft-404 HTML. Pixlet has no protobuf module, so consuming this from
+a Tidbyt app would need a decoding proxy. Ferry therefore uses timetables, like
+light rail.
+
+`ferry.nyc` is a **different operator** (NYC EDC/Hornblower). Open feed, has
+realtime, but all 50 of its landings are inside the five boroughs — none in New
+Jersey — so it is not used here. **Seastreak** has no working public feed.
 
 ---
 

@@ -48,9 +48,14 @@ FEEDS = {
     "bus": "https://content.njtransit.com/sites/default/files/developers-resources/bus_data.zip",
     "rail": "https://content.njtransit.com/sites/default/files/developers-resources/rail_data.zip",
     # NJ Transit runs no ferries; NY Waterway carries the Hudson crossings.
-    # Their feed moved to Trillium -- the widely cited data.bytemark.co bucket
-    # is dead (403) and every stale link still points at it.
-    "ferry": "https://data.trilliumtransit.com/gtfs/nywaterway-nj-us/nywaterway-nj-us.zip",
+    #
+    # NY Waterway publishes through two unrelated platforms. Connexionz is the
+    # one to use: it is republished daily and covers today, whereas the
+    # Trillium copy carries only the next booking and can be entirely in the
+    # future. Connexionz is also pure ferry, while Trillium mixes the boats
+    # with free connector shuttle buses.
+    # (The much-cited data.bytemark.co bucket is long dead -- 403.)
+    "ferry": "https://nywaterway.connexionz.net/rtt/public/resource/gtfs.zip",
 }
 
 # GTFS route_type values we care about. NJ Transit's three light rail lines
@@ -468,9 +473,10 @@ def build_ferry(zf):
     for r in read_csv(zf, "routes.txt"):
         if r["route_type"].strip() == ROUTE_TYPE_FERRY:
             ferry_routes[r["route_id"]] = (r.get("route_color") or "").strip()
-    log("  ferry: %d ferry routes (%d other rows ignored: shuttle buses)" % (
+    other = sum(1 for _ in read_csv(zf, "routes.txt")) - len(ferry_routes)
+    log("  ferry: %d ferry routes%s" % (
         len(ferry_routes),
-        sum(1 for _ in read_csv(zf, "routes.txt")) - len(ferry_routes)))
+        " (%d non-ferry rows ignored)" % other if other else ""))
 
     trips = {}
     for t in read_csv(zf, "trips.txt"):
@@ -487,39 +493,45 @@ def build_ferry(zf):
 
     # This feed's stop_times is small enough to hold, and a destination needs
     # the whole trip before any single call at it can be described.
-    rows = []
+    by_trip = defaultdict(list)
     for st in read_csv(zf, "stop_times.txt"):
-        if st["trip_id"] in trips:
-            rows.append(st)
-
-    last_stop = {}
-    for st in rows:
+        if st["trip_id"] not in trips:
+            continue
         try:
             seq = int(st["stop_sequence"])
         except (KeyError, ValueError):
             continue
-        current = last_stop.get(st["trip_id"])
-        if current is None or seq > current[0]:
-            last_stop[st["trip_id"]] = (seq, st["stop_id"])
+        by_trip[st["trip_id"]].append((seq, st["stop_id"],
+                                       (st.get("departure_time") or "").strip()))
 
     per_stop = defaultdict(lambda: defaultdict(list))
     stop_dirs = defaultdict(lambda: defaultdict(Counter))
-    for st in rows:
-        trip = trips[st["trip_id"]]
-        dep = (st.get("departure_time") or "").strip()
-        if not dep:
-            continue
+    for trip_id, calls in by_trip.items():
+        trip = trips[trip_id]
+        calls.sort()
+        for i, (_seq, stop_id, dep) in enumerate(calls):
+            if not dep:
+                continue
 
-        terminus = last_stop.get(st["trip_id"])
-        if not terminus or terminus[1] == st["stop_id"]:
-            # The final call is an arrival; nobody departs from it.
-            continue
-        dest = stop_names.get(terminus[1], "")
-        if not dest:
-            continue
+            # Where this boat goes from here: the last call after this one.
+            # Some sailings loop back to where they started -- "Brookfield
+            # Place -> Hoboken 14 -> Port Imperial" departing Port Imperial --
+            # so walk back past any call at this same stop, or the departure
+            # would look like it goes nowhere and be dropped.
+            dest_id = None
+            for (_s, later_id, _d) in reversed(calls[i + 1:]):
+                if later_id != stop_id:
+                    dest_id = later_id
+                    break
+            if dest_id is None:
+                continue  # genuinely the final call; an arrival, not a departure
 
-        per_stop[st["stop_id"]][trip["svc"]].append((dep[:5], "", dest))
-        stop_dirs[st["stop_id"]][trip["dir"]][dest] += 1
+            dest = stop_names.get(dest_id, "")
+            if not dest:
+                continue
+
+            per_stop[stop_id][trip["svc"]].append((dep[:5], "", dest))
+            stop_dirs[stop_id][trip["dir"]][dest] += 1
 
     calendar = build_calendar(zf, {t["svc"] for t in trips.values()})
     log("  ferry: %d service dates" % len(calendar))
