@@ -42,11 +42,15 @@ import sys
 import urllib.request
 import zipfile
 from collections import Counter, defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 FEEDS = {
     "bus": "https://content.njtransit.com/sites/default/files/developers-resources/bus_data.zip",
     "rail": "https://content.njtransit.com/sites/default/files/developers-resources/rail_data.zip",
+    # NJ Transit runs no ferries; NY Waterway carries the Hudson crossings.
+    # Their feed moved to Trillium -- the widely cited data.bytemark.co bucket
+    # is dead (403) and every stale link still points at it.
+    "ferry": "https://data.trilliumtransit.com/gtfs/nywaterway-nj-us/nywaterway-nj-us.zip",
 }
 
 # GTFS route_type values we care about. NJ Transit's three light rail lines
@@ -54,6 +58,7 @@ FEEDS = {
 # type 0, alongside commuter rail as type 2.
 ROUTE_TYPE_LIGHT_RAIL = "0"
 ROUTE_TYPE_BUS = "3"
+ROUTE_TYPE_FERRY = "4"
 
 # 0.1 degrees is roughly 11 km of latitude and 8.5 km of longitude at NJ's
 # latitude. Big enough that one cell almost always holds nearby stops, small
@@ -406,6 +411,159 @@ def _route_sort_key(name):
     return (0 if name.isdigit() else 1, int(digits) if digits else 0, name)
 
 
+def build_calendar(zf, service_ids):
+    """date -> active service ids, for either style of GTFS calendar.
+
+    NJ Transit ships only calendar_dates.txt, where every operating day is
+    listed explicitly. NY Waterway ships a real calendar.txt of weekday
+    patterns with calendar_dates.txt holding only the exceptions. Handle both.
+    """
+    calendar = defaultdict(set)
+    names = zf.namelist()
+
+    if "calendar.txt" in names:
+        weekdays = ["monday", "tuesday", "wednesday", "thursday", "friday",
+                    "saturday", "sunday"]
+        for row in read_csv(zf, "calendar.txt"):
+            svc = row["service_id"].strip()
+            if svc not in service_ids:
+                continue
+            try:
+                start = datetime.strptime(row["start_date"].strip(), "%Y%m%d").date()
+                end = datetime.strptime(row["end_date"].strip(), "%Y%m%d").date()
+            except (KeyError, ValueError):
+                continue
+            runs = [row.get(day, "0").strip() == "1" for day in weekdays]
+            day = start
+            while day <= end:
+                if runs[day.weekday()]:
+                    calendar[day.strftime("%Y%m%d")].add(svc)
+                day += timedelta(days=1)
+
+    if "calendar_dates.txt" in names:
+        for row in read_csv(zf, "calendar_dates.txt"):
+            svc = row["service_id"].strip()
+            if svc not in service_ids:
+                continue
+            date = row["date"].strip()
+            exception = row["exception_type"].strip()
+            if exception == "1":
+                calendar[date].add(svc)
+            elif exception == "2":
+                calendar[date].discard(svc)
+
+    return {date: sorted(svcs) for date, svcs in calendar.items() if svcs}
+
+
+def build_ferry(zf):
+    """NY Waterway terminals plus precomputed timetables.
+
+    Two quirks of this feed shape the code. Ferry routes carry no
+    route_short_name and every trip_headsign is blank, so a destination has to
+    come from the trip's own final stop. And the feed mixes the boats
+    (route_type 4) with NY Waterway's free connector shuttle buses
+    (route_type 3), which are a different thing and are left out here.
+    """
+    ferry_routes = {}
+    for r in read_csv(zf, "routes.txt"):
+        if r["route_type"].strip() == ROUTE_TYPE_FERRY:
+            ferry_routes[r["route_id"]] = (r.get("route_color") or "").strip()
+    log("  ferry: %d ferry routes (%d other rows ignored: shuttle buses)" % (
+        len(ferry_routes),
+        sum(1 for _ in read_csv(zf, "routes.txt")) - len(ferry_routes)))
+
+    trips = {}
+    for t in read_csv(zf, "trips.txt"):
+        if t["route_id"] in ferry_routes:
+            trips[t["trip_id"]] = {
+                "svc": t["service_id"].strip(),
+                "dir": t.get("direction_id", "0"),
+            }
+    log("  ferry: %d trips" % len(trips))
+
+    stop_names = {}
+    for s in read_csv(zf, "stops.txt"):
+        stop_names[s["stop_id"]] = title_case(strip_noise(s["stop_name"]))
+
+    # This feed's stop_times is small enough to hold, and a destination needs
+    # the whole trip before any single call at it can be described.
+    rows = []
+    for st in read_csv(zf, "stop_times.txt"):
+        if st["trip_id"] in trips:
+            rows.append(st)
+
+    last_stop = {}
+    for st in rows:
+        try:
+            seq = int(st["stop_sequence"])
+        except (KeyError, ValueError):
+            continue
+        current = last_stop.get(st["trip_id"])
+        if current is None or seq > current[0]:
+            last_stop[st["trip_id"]] = (seq, st["stop_id"])
+
+    per_stop = defaultdict(lambda: defaultdict(list))
+    stop_dirs = defaultdict(lambda: defaultdict(Counter))
+    for st in rows:
+        trip = trips[st["trip_id"]]
+        dep = (st.get("departure_time") or "").strip()
+        if not dep:
+            continue
+
+        terminus = last_stop.get(st["trip_id"])
+        if not terminus or terminus[1] == st["stop_id"]:
+            # The final call is an arrival; nobody departs from it.
+            continue
+        dest = stop_names.get(terminus[1], "")
+        if not dest:
+            continue
+
+        per_stop[st["stop_id"]][trip["svc"]].append((dep[:5], "", dest))
+        stop_dirs[st["stop_id"]][trip["dir"]][dest] += 1
+
+    calendar = build_calendar(zf, {t["svc"] for t in trips.values()})
+    log("  ferry: %d service dates" % len(calendar))
+
+    stops = []
+    timetables = {}
+    dests = {}
+    for s in read_csv(zf, "stops.txt"):
+        sid = s["stop_id"]
+        if sid not in per_stop:
+            continue
+        try:
+            lat, lon = float(s["stop_lat"]), float(s["stop_lon"])
+        except (TypeError, ValueError):
+            continue
+
+        name = stop_names[sid]
+        heads = sorted({h for svc in per_stop[sid].values() for (_, _, h) in svc})
+        directions = summarise_directions(stop_dirs.get(sid, {}))
+
+        stops.append({
+            "c": sid,
+            "lat": round(lat, 5),
+            "lon": round(lon, 5),
+            "n": name,
+            "m": "f",
+            # A ferry route IS its destination, so the picker lists where the
+            # boats go rather than route names nobody uses.
+            "r": heads[:4],
+            "t": " / ".join(d["l"] for d in directions[:2]),
+        })
+        if directions:
+            dests[sid] = directions
+
+        head_idx = {h: i for i, h in enumerate(heads)}
+        svc_dep = {}
+        for svc, deps in per_stop[sid].items():
+            svc_dep[svc] = [[t, r, head_idx[h]] for (t, r, h) in sorted(deps)]
+        timetables[sid] = {"n": name, "heads": heads, "svc": svc_dep}
+
+    log("  ferry: %d terminals with timetables" % len(stops))
+    return stops, timetables, calendar, dests
+
+
 def build_light_rail(zf):
     """Light rail stops plus full precomputed timetables."""
     lr_routes = {}
@@ -448,21 +606,9 @@ def build_light_rail(zf):
         stop_routes[st["stop_id"]].add(trip["route"])
         stop_dirs[st["stop_id"]][trip["dir"]][trip["head"]] += 1
 
-    # date -> active service ids. NJ Transit ships only calendar_dates.txt,
-    # where exception_type 1 means "service added on this date".
-    calendar = defaultdict(list)
-    for cd in read_csv(zf, "calendar_dates.txt"):
-        if cd["exception_type"].strip() == "1":
-            calendar[cd["date"].strip()].append(cd["service_id"].strip())
-
-    # Trim the calendar to services light rail actually uses, so the file the
-    # app downloads stays small.
-    lr_services = {t["svc"] for t in trips.values()}
-    calendar = {
-        date: sorted(s for s in svcs if s in lr_services)
-        for date, svcs in calendar.items()
-    }
-    calendar = {d: s for d, s in calendar.items() if s}
+    # Scoped to the services light rail actually uses, so the file the app
+    # downloads stays small.
+    calendar = build_calendar(zf, {t["svc"] for t in trips.values()})
     log("  light rail: %d service dates" % len(calendar))
 
     stops = []
@@ -530,6 +676,7 @@ def main():
     log("Fetching GTFS feeds...")
     bus_zf = fetch_feed("bus", FEEDS["bus"], args.cache)
     rail_zf = fetch_feed("rail", FEEDS["rail"], args.cache)
+    ferry_zf = fetch_feed("ferry", FEEDS["ferry"], args.cache)
 
     log("Building bus stop geography...")
     bus_stops, bus_dests = build_bus(bus_zf)
@@ -537,13 +684,16 @@ def main():
     log("Building light rail timetables...")
     lr_stops, timetables, calendar, lr_routes, lr_dests = build_light_rail(rail_zf)
 
+    log("Building ferry timetables...")
+    fr_stops, fr_timetables, fr_calendar, fr_dests = build_ferry(ferry_zf)
+
     # Wipe previous output so removed stops don't linger as stale files.
     if os.path.isdir(args.out):
         shutil.rmtree(args.out)
 
     log("Writing grid cells...")
     cells = defaultdict(list)
-    for stop in bus_stops + lr_stops:
+    for stop in bus_stops + lr_stops + fr_stops:
         cells[cell_key(stop["lat"], stop["lon"])].append(stop)
 
     total_bytes = 0
@@ -557,8 +707,9 @@ def main():
     all_dests = {}
     all_dests.update(bus_dests)
     all_dests.update(lr_dests)
+    all_dests.update(fr_dests)
     dest_cells = defaultdict(dict)
-    for stop in bus_stops + lr_stops:
+    for stop in bus_stops + lr_stops + fr_stops:
         found = all_dests.get(stop["c"])
         if found:
             dest_cells[cell_key(stop["lat"], stop["lon"])][stop["c"]] = found
@@ -570,12 +721,18 @@ def main():
         total_bytes += write_json(os.path.join(args.out, "lr", "%s.json" % sid), tt)
     total_bytes += write_json(os.path.join(args.out, "lr", "calendar.json"), calendar)
 
+    log("Writing ferry timetables...")
+    for sid, tt in fr_timetables.items():
+        total_bytes += write_json(os.path.join(args.out, "fr", "%s.json" % sid), tt)
+    total_bytes += write_json(os.path.join(args.out, "fr", "calendar.json"), fr_calendar)
+
     meta = {
         "built": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "cell_size": CELL_SIZE,
         "counts": {
             "bus_stops": len(bus_stops),
             "light_rail_stops": len(lr_stops),
+            "ferry_terminals": len(fr_stops),
             "cells": len(cells),
             "max_match_terminals": MAX_MATCH_TERMINALS,
             "service_dates": len(calendar),
@@ -588,10 +745,39 @@ def main():
     total_bytes += write_json(os.path.join(args.out, "meta.json"), meta)
 
     log("")
-    log("Done. %d cells, %d bus stops, %d light rail stops, %.1f MB total." % (
-        len(cells), len(bus_stops), len(lr_stops), total_bytes / 1e6))
+    log("Done. %d cells, %d bus stops, %d light rail stops, %d ferry "
+        "terminals, %.1f MB total." % (len(cells), len(bus_stops), len(lr_stops),
+                                       len(fr_stops), total_bytes / 1e6))
     biggest = max(cells.items(), key=lambda kv: len(kv[1]))
     log("Densest cell %s holds %d stops." % (biggest[0], len(biggest[1])))
+
+    check_coverage({"light rail": calendar, "ferry": fr_calendar})
+
+
+def check_coverage(calendars):
+    """Warn when a timetable does not actually cover today.
+
+    An operator can publish only the next booking and replace the current one,
+    leaving a feed that is valid but describes only the future. NY Waterway did
+    exactly that. Without this, the build succeeds, the files look right, and
+    the app quietly shows "no service" until the window opens.
+    """
+    today = datetime.now().strftime("%Y%m%d")
+    for name, calendar in calendars.items():
+        if not calendar:
+            log("  WARNING: %s has no service dates at all." % name)
+            continue
+        if today in calendar:
+            continue
+        upcoming = sorted(d for d in calendar if d >= today)
+        if upcoming:
+            log("  WARNING: %s has no service today (%s). Its timetable starts "
+                "%s -- the app will show 'no service' until then."
+                % (name, today, upcoming[0]))
+        else:
+            log("  WARNING: %s timetable has expired; its last date was %s. "
+                "Re-run this script to pick up a newer feed."
+                % (name, max(calendar)))
 
 
 if __name__ == "__main__":

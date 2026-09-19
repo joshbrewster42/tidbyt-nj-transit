@@ -84,12 +84,18 @@ LINE_COLORS = {
 }
 BUS_COLOR = "#e8a33d"
 
+# NY Waterway's hull blue. NJ Transit runs no ferries -- the Hudson crossings
+# are NY Waterway's, and their feed is a separate source.
+FERRY_COLOR = "#1e9bd7"
+
 COLOR_DIM = "#6a6a6a"
 COLOR_TEXT = "#ffffff"
 COLOR_SOON = "#ff5656"
 COLOR_OK = "#4ade80"
 
 FONT = "tom-thumb"
+
+MODE_NAMES = {"b": "Bus", "l": "Light Rail", "f": "Ferry"}
 
 DEFAULT_STOP = json.encode({
     "c": "20783",
@@ -281,14 +287,15 @@ def pretty_dest(text):
 # Scheduled light rail departures
 # ---------------------------------------------------------------------------
 
-def light_rail_departures(stop_id, now):
-    """Next light rail departures from the published timetable.
+def scheduled_departures(kind, stop_id, now):
+    """Next departures from a published timetable.
 
-    NJ Transit publishes no realtime feed for light rail, so these come from
-    the GTFS timetable precomputed into this app's data files.
+    Neither light rail nor NY Waterway's ferries publish realtime data, so both
+    read from GTFS timetables precomputed into this app's data files. The only
+    difference is which directory they live in.
     """
-    tt = http.get("%s/lr/%s.json" % (DATA_BASE, stop_id), ttl_seconds = TTL_STATIC)
-    cal = http.get("%s/lr/calendar.json" % DATA_BASE, ttl_seconds = TTL_STATIC)
+    tt = http.get("%s/%s/%s.json" % (DATA_BASE, kind, stop_id), ttl_seconds = TTL_STATIC)
+    cal = http.get("%s/%s/calendar.json" % (DATA_BASE, kind), ttl_seconds = TTL_STATIC)
     if tt.status_code != 200 or cal.status_code != 200:
         return [], "no data"
 
@@ -486,6 +493,8 @@ def fetch_destinations(stop):
 def badge_color(stop, route):
     if stop["m"] == "l":
         return LINE_COLORS.get(route, "#4aa3df")
+    if stop["m"] == "f":
+        return FERRY_COLOR
     return BUS_COLOR
 
 def text_on(hex_color):
@@ -670,7 +679,9 @@ def main(config):
     now = time.now().in_location(tz)
 
     if stop["m"] == "l":
-        departures, err = light_rail_departures(stop["c"], now)
+        departures, err = scheduled_departures("lr", stop["c"], now)
+    elif stop["m"] == "f":
+        departures, err = scheduled_departures("fr", stop["c"], now)
     else:
         departures, err = bus_departures(stop["c"])
 
@@ -720,21 +731,35 @@ def stop_options(location):
 
     options = []
     for (dist_km, stop) in nearby_stops(lat, lon):
-        routes = ", ".join(stop.get("r", [])[:4])
+        mode = stop.get("m", "b")
 
         # Starlark's % operator has no precision specifier, so round by hand.
         tenths = int(dist_km * 0.621371 * 10 + 0.5)
         miles = "%d.%d" % (tenths // 10, tenths % 10)
 
+        label = stop["n"]
+        if mode != "b":
+            # A boat and a bus stop can share a neighbourhood and a name; say
+            # which this is.
+            label += " (%s)" % MODE_NAMES.get(mode, "Bus")
+
         # Most stops sit on one side of a street and serve one direction, so a
         # street corner appears twice under the same name. Saying where each
-        # one's buses are headed is the only way to tell them apart.
+        # one's vehicles are headed is the only way to tell them apart.
         heading = stop.get("t", "")
-        name = "%s to %s" % (stop["n"], heading) if heading else stop["n"]
+        if heading:
+            label += " to %s" % heading
+
+        # A ferry route is named for where it goes, so listing routes after the
+        # heading would just repeat it. Bus and light rail route numbers do add
+        # something.
+        routes = ", ".join(stop.get("r", [])[:4])
+        if routes and mode != "f":
+            label += " - %s" % routes
 
         options.append(
             schema.Option(
-                display = "%s - %s (%s mi)" % (name, routes, miles),
+                display = "%s (%s mi)" % (label, miles),
                 value = json.encode(stop),
             ),
         )

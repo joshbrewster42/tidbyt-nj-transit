@@ -228,15 +228,54 @@ the device. Polling faster only re-serves cached data.
 
 ## Ferry
 
-Not implemented. NJ Transit does not operate ferries — that is NY Waterway and
-Seastreak. The commonly-cited NY Waterway GTFS feed on S3 now returns
-`403 AccessDenied`, so there is no working open source for it as of this
-writing.
+NJ Transit runs no ferries — the Hudson crossings are **NY Waterway's**, and
+they are a separate feed:
 
-The seam for adding it: give ferry stops `"m": "f"` in the pipeline, add a
-branch in `main()` alongside the light rail one, and a color in `LINE_COLORS`.
-Everything else — nearest-stop search, the picker, rendering — already works by
-mode and needs no changes.
+```
+https://data.trilliumtransit.com/gtfs/nywaterway-nj-us/nywaterway-nj-us.zip
+```
+
+No registration. The widely cited `data.bytemark.co` S3 bucket is dead (403)
+and most links still point at it; the feed moved to Trillium.
+
+13 terminals, 9 on the NJ side. Port Imperial is the hub with 302 sailings a
+day; Hoboken, Paulus Hook, Lincoln Harbor, Liberty Harbor, Edgewater and South
+Amboy are the rest. No realtime exists, so ferry uses the same precomputed
+timetable path as light rail.
+
+Three things about this feed are worth knowing before touching it:
+
+- **No `route_short_name`, and every `trip_headsign` is blank.** Destinations
+  are derived from each trip's final stop instead.
+- **It mixes boats with buses.** 16 ferry routes (`route_type=4`) and 19 free
+  connector shuttles (`route_type=3`). Only the boats are imported.
+- **A terminal's name can lie.** The stop called "Port Imperial Ferry Terminal"
+  carries *zero* ferries — it is the shuttle bus bay. The boats leave from the
+  stop called plainly "Port Imperial".
+
+### Feeds that describe only the future
+
+NY Waterway publishes one booking at a time and *replaces* the previous one, so
+a freshly downloaded feed can be entirely in the future. The copy fetched on
+2026-09-19 covered `20261001`–`20270401` and had no service for the next twelve
+days.
+
+That is valid GTFS and an easy way to ship a silently empty app, so the build
+warns:
+
+```
+WARNING: ferry has no service today (20260919). Its timetable starts
+20261001 -- the app will show 'no service' until then.
+```
+
+### NYC Ferry is a different operator
+
+`ferry.nyc` is NYC EDC/Hornblower, not NY Waterway. Its feed is open and even
+has GTFS-realtime, but all 50 of its landings are inside the five boroughs —
+**none in New Jersey** — so it is not used here.
+
+**Seastreak** (Raritan Bayshore) has no working public feed: transitfeeds.com
+is defunct, mass.gov blocks automated fetches, and no Trillium path exists.
 
 ---
 
