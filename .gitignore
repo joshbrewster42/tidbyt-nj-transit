@@ -1,0 +1,5 @@
+# GTFS zips are large and regenerable; data/v1/ is the committed output.
+*.zip
+__pycache__/
+*.pyc
+*.webp

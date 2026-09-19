@@ -1,0 +1,8 @@
+---
+id: nj-transit-nearby
+name: NJ Transit Nearby
+summary: Nearby NJT departures
+desc: Pick a spot on the map and see the next departures from the closest NJ Transit bus stop or light rail station. Bus times are realtime; light rail comes from the published timetable.
+author: joshbrewster42
+fileName: nj_transit_nearby.star
+packageName: njtransitnearby
