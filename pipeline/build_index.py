@@ -41,7 +41,7 @@ import shutil
 import sys
 import urllib.request
 import zipfile
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import datetime, timezone
 
 FEEDS = {
@@ -59,6 +59,11 @@ ROUTE_TYPE_BUS = "3"
 # latitude. Big enough that one cell almost always holds nearby stops, small
 # enough that a cell file stays a few KB.
 CELL_SIZE = 0.1
+
+# Port Authority is served by 66 routes and nearly 200 distinct
+# destinations. A dropdown that long is worse than no filter at all, so
+# only the busiest destinations at a stop are offered.
+MAX_DESTINATIONS = 12
 
 # Light rail timetables are only useful for so long, and NJ Transit's
 # calendar_dates.txt is explicit (there is no calendar.txt), so we simply keep
@@ -176,6 +181,38 @@ def clean_headsign(headsign, route):
     return title_case(strip_noise(text))
 
 
+# Bus headsigns carry a lot of operational noise: the route code they already
+# belong to, a fare notice, and a "VIA <somewhere>" qualifier that splits one
+# destination into several. Stripping all three collapses
+#   "119 NEW YORK-Exact Fare"
+#   "119J NEW YORK VIA JOURNAL SQUARE-Exact Fare"
+# to a single "New York", which is what a rider actually picks between.
+FARE_NOTICES = ("-EXACT FARE", "- EXACT FARE", "EXACT FARE")
+
+
+def dest_label(headsign, route):
+    """Reduce a GTFS headsign to the destination a rider would name."""
+    text = headsign.strip().upper()
+
+    # Leading route code, including branch letters: "119J NEW YORK" -> "NEW YORK".
+    parts = text.split()
+    if parts and route:
+        head = parts[0]
+        if head == route.upper() or (head.startswith(route.upper()) and
+                                     head[len(route):].isalpha()):
+            text = " ".join(parts[1:])
+
+    for notice in FARE_NOTICES:
+        if text.endswith(notice):
+            text = text[: -len(notice)].strip(" -")
+
+    # "NEW YORK VIA JOURNAL SQUARE" -> "NEW YORK"
+    if " VIA " in text:
+        text = text.split(" VIA ")[0]
+
+    return title_case(strip_noise(text.strip())) or title_case(headsign)
+
+
 def build_bus(zf):
     """Bus stops -> geography only. Departures come from the realtime API."""
     routes = {}
@@ -184,26 +221,35 @@ def build_bus(zf):
 
     trip_route = {}
     for t in read_csv(zf, "trips.txt"):
-        trip_route[t["trip_id"]] = t["route_id"]
+        route_name = routes.get(t["route_id"], "")
+        trip_route[t["trip_id"]] = (
+            t["route_id"],
+            dest_label(t["trip_headsign"], route_name),
+        )
 
     log("  bus: %d routes, %d trips" % (len(routes), len(trip_route)))
 
     # Which routes serve each stop. This is the expensive pass: 77 MB of
     # stop_times. We only keep (stop_id -> set of route short names).
     stop_routes = defaultdict(set)
+    stop_dests = defaultdict(Counter)
     seen = 0
     for st in read_csv(zf, "stop_times.txt"):
         seen += 1
         if seen % 2_000_000 == 0:
             log("    ...%d stop_times rows" % seen)
-        rid = trip_route.get(st["trip_id"])
-        if rid:
+        entry = trip_route.get(st["trip_id"])
+        if entry:
+            rid, dest = entry
             name = routes.get(rid)
             if name:
                 stop_routes[st["stop_id"]].add(name)
+                if dest:
+                    stop_dests[st["stop_id"]][dest] += 1
     log("  bus: scanned %d stop_times rows" % seen)
 
     stops = []
+    dests = {}
     skipped_no_code = 0
     for s in read_csv(zf, "stops.txt"):
         # The realtime API keys off the rider-facing 5-digit stop_code printed
@@ -230,9 +276,11 @@ def build_bus(zf):
             "m": "b",
             "r": sorted(served, key=_route_sort_key),
         })
+        dests[code] = [d for (d, _n) in
+                       stop_dests.get(s["stop_id"], Counter()).most_common(MAX_DESTINATIONS)]
 
     log("  bus: %d usable stops (%d skipped: no stop_code)" % (len(stops), skipped_no_code))
-    return stops
+    return stops, dests
 
 
 def _route_sort_key(name):
@@ -299,6 +347,7 @@ def build_light_rail(zf):
 
     stops = []
     timetables = {}
+    lr_dests = {}
     for s in read_csv(zf, "stops.txt"):
         sid = s["stop_id"]
         if sid not in per_stop:
@@ -308,6 +357,11 @@ def build_light_rail(zf):
         except (TypeError, ValueError):
             continue
         name = title_case(strip_noise(s["stop_name"]))
+
+        # Dedupe headsigns into a table; they repeat hundreds of times per stop
+        # and are the bulk of the bytes otherwise.
+        heads = sorted({h for svc in per_stop[sid].values() for (_, _, h) in svc})
+
         stops.append({
             "c": sid,
             "lat": round(lat, 5),
@@ -316,10 +370,9 @@ def build_light_rail(zf):
             "m": "l",
             "r": sorted(stop_routes[sid]),
         })
-
-        # Dedupe headsigns into a table; they repeat hundreds of times per stop
-        # and are the bulk of the bytes otherwise.
-        heads = sorted({h for svc in per_stop[sid].values() for (_, _, h) in svc})
+        # Light rail headsigns are already cleaned, so these match what the
+        # app renders exactly -- filtering is an equality test, not a guess.
+        lr_dests[sid] = heads
         head_idx = {h: i for i, h in enumerate(heads)}
         svc_dep = {}
         for svc, deps in per_stop[sid].items():
@@ -331,7 +384,7 @@ def build_light_rail(zf):
         }
 
     log("  light rail: %d stops with timetables" % len(stops))
-    return stops, timetables, calendar, lr_routes
+    return stops, timetables, calendar, lr_routes, lr_dests
 
 
 def write_json(path, obj):
@@ -356,10 +409,10 @@ def main():
     rail_zf = fetch_feed("rail", FEEDS["rail"], args.cache)
 
     log("Building bus stop geography...")
-    bus_stops = build_bus(bus_zf)
+    bus_stops, bus_dests = build_bus(bus_zf)
 
     log("Building light rail timetables...")
-    lr_stops, timetables, calendar, lr_routes = build_light_rail(rail_zf)
+    lr_stops, timetables, calendar, lr_routes, lr_dests = build_light_rail(rail_zf)
 
     # Wipe previous output so removed stops don't linger as stale files.
     if os.path.isdir(args.out):
@@ -377,6 +430,18 @@ def main():
         stops.sort(key=lambda s: (s["m"] != "l", -len(s["r"]), s["n"]))
         total_bytes += write_json(os.path.join(args.out, "cells", "%s.json" % key), stops)
 
+    log("Writing destination lists...")
+    all_dests = {}
+    all_dests.update(bus_dests)
+    all_dests.update(lr_dests)
+    dest_cells = defaultdict(dict)
+    for stop in bus_stops + lr_stops:
+        found = all_dests.get(stop["c"])
+        if found:
+            dest_cells[cell_key(stop["lat"], stop["lon"])][stop["c"]] = found
+    for key, mapping in dest_cells.items():
+        total_bytes += write_json(os.path.join(args.out, "dirs", "%s.json" % key), mapping)
+
     log("Writing light rail timetables...")
     for sid, tt in timetables.items():
         total_bytes += write_json(os.path.join(args.out, "lr", "%s.json" % sid), tt)
@@ -389,6 +454,7 @@ def main():
             "bus_stops": len(bus_stops),
             "light_rail_stops": len(lr_stops),
             "cells": len(cells),
+            "max_destinations": MAX_DESTINATIONS,
             "service_dates": len(calendar),
         },
         "light_rail_routes": {

@@ -35,19 +35,15 @@ PORT = 8777
 
 FAKE_TOKEN = "mock-user-token-not-a-real-credential"
 
-# Plausible destinations per route, so headers are not all identical.
+# Fallback only, for stops with no destination data.
 DESTINATIONS = [
     "NEWARK PENN STATION",
     "JERSEY CITY JOURNAL SQ",
     "HOBOKEN TERMINAL",
-    "NEW YORK PORT AUTHORITY",
-    "IRVINGTON CENTER",
-    "BAYONNE 8TH ST",
-    "PATERSON BROADWAY",
-    "ELIZABETH CENTER",
 ]
 
 _stop_routes_cache = {}
+_stop_dests_cache = {}
 
 
 def routes_for_stop(stop_code):
@@ -67,12 +63,30 @@ def routes_for_stop(stop_code):
     return stop.get("r", [])
 
 
+def dests_for_stop(stop_code):
+    """The stop's real destinations, so the direction filter is testable.
+
+    Inventing destinations from a fixed list made filtering untestable: a
+    rider would pick "Journal Square" and the mock would emit somewhere else
+    entirely, which looks like a broken filter rather than a fake feed.
+    """
+    if not _stop_dests_cache:
+        dirs_dir = os.path.join(ROOT, "dirs")
+        if os.path.isdir(dirs_dir):
+            for fn in os.listdir(dirs_dir):
+                if fn.endswith(".json"):
+                    with open(os.path.join(dirs_dir, fn), encoding="utf-8") as fh:
+                        _stop_dests_cache.update(json.load(fh))
+    return _stop_dests_cache.get(str(stop_code), [])
+
+
 def make_departures(stop_code, seed=None):
     """Build a DVTrip array shaped like the documented BUSDV2 response."""
     routes = routes_for_stop(stop_code)
     if not routes:
         return []
 
+    dests = dests_for_stop(stop_code) or DESTINATIONS
     rng = random.Random(seed if seed is not None else stop_code)
     trips = []
     minutes = 0
@@ -87,7 +101,7 @@ def make_departures(stop_code, seed=None):
         transmitting = rng.random() > 0.2
         trips.append({
             "public_route": route,
-            "header": rng.choice(DESTINATIONS),
+            "header": rng.choice(dests).upper(),
             "lanegate": "",
             "departuretime": ("%d min" % minutes) if transmitting else "",
             "sched_dep_time": "%d min" % minutes,

@@ -139,6 +139,35 @@ pixlet render nj_transit_nearby.star \
 
 ---
 
+## Choosing a direction
+
+Most stops are served in both directions, and a rider only cares about one. So
+after picking a stop you can pick a destination, and only departures heading
+that way are shown.
+
+The options come from GTFS, cleaned at build time. Bus headsigns are noisy —
+`"119 NEW YORK-Exact Fare"` and `"119J NEW YORK VIA JOURNAL SQUARE-Exact Fare"`
+are the same direction to a rider — so the route code, the fare notice and the
+`VIA` qualifier are stripped, collapsing both to `New York`. Port Authority
+still yields nearly 200 distinct destinations, so only the twelve busiest at a
+stop are offered; a longer list is worse than no filter.
+
+The picker is a `schema.Generated` field sourced from `stop`, so its options
+regenerate whenever the chosen stop changes rather than going stale.
+
+**Matching is the fragile part.** Light rail destinations come from our own
+data and compare exactly. Bus destinations arrive live from the API and may be
+worded differently than the GTFS headsign they were derived from, so matching
+compares word by word against whichever description is shorter, expanding known
+abbreviations (`Sq`/`Square`, `Ctr`/`Center`). Generic prefix matching was tried
+first and rejected — it pairs "Newark" with "New York". See
+`pipeline/run_tests.py` for the cases this is pinned against.
+
+If a filter matches nothing, the display says `none to <destination>` rather
+than going blank, so a filter is never mistaken for an outage.
+
+---
+
 ## Ferry
 
 Not implemented. NJ Transit does not operate ferries — that is NY Waterway and
@@ -204,4 +233,5 @@ and nothing is stored.
 | `python3 pipeline/make_dev_copy.py` | Regenerate `.dev/` copy (run after editing the app) |
 | `python3 pipeline/devui.py` | Address-search dev UI + mock API |
 | `python3 pipeline/geocode.py --stops ADDR` | Coordinates and nearby stops for an address |
+| `python3 pipeline/run_tests.py` | Assertions for the destination matcher and helpers |
 | `pixlet check nj_transit_nearby.star` | Community-repo readiness |

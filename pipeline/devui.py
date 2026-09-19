@@ -72,7 +72,17 @@ def nearby(lat, lon, limit=25):
     return scored[:limit]
 
 
-def render_stop(stop_obj):
+def destinations_for(lat, lon, code):
+    """The destination list the app's direction picker would offer."""
+    ci, cj = math.floor(lat / CELL_SIZE), math.floor(lon / CELL_SIZE)
+    path = os.path.join(DATA, "dirs", "%d_%d.json" % (ci, cj))
+    if not os.path.exists(path):
+        return []
+    with open(path, encoding="utf-8") as fh:
+        return json.load(fh).get(code, [])
+
+
+def render_stop(stop_obj, direction=""):
     """Render the real app for one stop and return the image bytes."""
     if not os.path.exists(DEV_APP):
         raise RuntimeError(
@@ -82,7 +92,8 @@ def render_stop(stop_obj):
         out = os.path.join(tmp, "out.webp")
         proc = subprocess.run(
             ["pixlet", "render", os.path.basename(DEV_APP),
-             "stop=" + json.dumps(stop_obj), "--magnify", "6", "-o", out],
+             "stop=" + json.dumps(stop_obj),
+             "direction=" + direction, "--magnify", "6", "-o", out],
             cwd=os.path.dirname(DEV_APP),
             capture_output=True, text=True, timeout=60)
         if proc.returncode != 0 or not os.path.exists(out):
@@ -144,6 +155,13 @@ PAGE = """<!DOCTYPE html>
   .empty { color: var(--dim); padding: 14px 15px; font-size: 14px; }
   .coords { color: var(--dim); font-size: 12px; padding: 0 15px 12px;
             font-variant-numeric: tabular-nums; }
+  .chips { padding: 12px 15px; display: flex; flex-wrap: wrap; gap: 7px; }
+  .chip { font-size: 13px; padding: 6px 11px; border-radius: 99px;
+          border: 1px solid var(--line); background: #18202a;
+          color: var(--dim); cursor: pointer; }
+  .chip:hover { border-color: #46566a; color: var(--text); }
+  .chip.on { background: var(--accent); border-color: var(--accent);
+             color: #11151c; font-weight: 600; }
 </style>
 </head>
 <body>
@@ -157,6 +175,7 @@ PAGE = """<!DOCTYPE html>
 
   <div id="places"></div>
   <div id="stops"></div>
+  <div id="dirs"></div>
   <div id="out"></div>
 </div>
 
@@ -209,13 +228,41 @@ async function pick(lat, lon) {
   show(0);
 }
 
+let current = null, direction = '';
+
 async function show(i) {
   document.querySelectorAll('.row.on').forEach(e => e.classList.remove('on'));
   const el = $('s' + i); if (el) el.classList.add('on');
-  const s = lastStops[i];
+  current = lastStops[i];
+  direction = '';
+  await loadDirections(current);
+  await draw();
+}
+
+async function loadDirections(s) {
+  const r = await fetch(`/api/dests?lat=${s.lat}&lon=${s.lon}&code=${encodeURIComponent(s.c)}`);
+  const dests = await r.json();
+  if (!dests.length) { $('dirs').innerHTML = ''; return; }
+  $('dirs').innerHTML = card('Direction',
+    '<div class="chips">' +
+    `<span class="chip on" onclick="setDir('')">All directions</span>` +
+    dests.map(d => `<span class="chip" onclick="setDir(${JSON.stringify(d).replace(/"/g,'&quot;')})">To ${esc(d)}</span>`).join('') +
+    '</div>');
+}
+
+function setDir(d) {
+  direction = d;
+  document.querySelectorAll('.chip').forEach(c => c.classList.remove('on'));
+  event.target.classList.add('on');
+  draw();
+}
+
+async function draw() {
+  const s = current;
   $('out').innerHTML = card('Tidbyt preview', '<div class="empty">Rendering…</div>');
   try {
-    const r = await fetch('/api/render?stop=' + encodeURIComponent(JSON.stringify(s)));
+    const r = await fetch('/api/render?stop=' + encodeURIComponent(JSON.stringify(s)) +
+                          '&direction=' + encodeURIComponent(direction));
     if (!r.ok) throw new Error(await r.text());
     const blob = await r.blob();
     $('out').innerHTML = card('Tidbyt preview',
@@ -278,13 +325,24 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(json.dumps([]), status=400)
             return self._send(json.dumps(nearby(lat, lon)))
 
+        if parts.path == "/api/dests":
+            try:
+                lat = float((q.get("lat") or ["0"])[0])
+                lon = float((q.get("lon") or ["0"])[0])
+            except ValueError:
+                return self._send(json.dumps([]), status=400)
+            code = (q.get("code") or [""])[0]
+            return self._send(json.dumps(destinations_for(lat, lon, code)))
+
         if parts.path == "/api/render":
             raw = (q.get("stop") or [""])[0]
+            direction = (q.get("direction") or [""])[0]
             try:
                 stop = json.loads(raw)
-                # The app only needs these; drop the UI's distance field.
-                stop = {k: stop[k] for k in ("c", "n", "m", "r") if k in stop}
-                return self._send(render_stop(stop), "image/webp")
+                # lat/lon come along so the app can locate its data cell.
+                stop = {k: stop[k] for k in ("c", "n", "m", "r", "lat", "lon")
+                        if k in stop}
+                return self._send(render_stop(stop, direction), "image/webp")
             except Exception as exc:
                 return self._send(str(exc), "text/plain", status=500)
 

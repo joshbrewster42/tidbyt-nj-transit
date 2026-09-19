@@ -65,6 +65,10 @@ NJT_PASSWORD_ENC = "REPLACE_WITH_PIXLET_ENCRYPT_OUTPUT_PASSWORD"
 # ---------------------------------------------------------------------------
 ROWS = 3  # departures that fit under the header on a 64x32 display
 
+# Fetch more than fits, so filtering by destination still has something to
+# choose from. Truncation to ROWS happens after the filter, never before.
+FETCH_LIMIT = 15
+
 # Official NJ Transit route colors, from routes.txt in the GTFS feed.
 LINE_COLORS = {
     "HBLR": "#008080",
@@ -225,7 +229,7 @@ def bus_departures(stop_code):
             "when": when,
             "live": predicted != "",
         })
-        if len(out) >= ROWS:
+        if len(out) >= FETCH_LIMIT:
             break
 
     if not out:
@@ -321,7 +325,7 @@ def light_rail_departures(stop_id, now):
         return [], "no departures"
 
     upcoming = sorted(upcoming, key = lambda d: _wait_of(d))
-    return upcoming[:ROWS], None
+    return upcoming[:FETCH_LIMIT], None
 
 def _wait_of(dep):
     if dep["when"] == "now":
@@ -333,6 +337,115 @@ def _hhmm_to_minutes(hhmm):
     if len(parts) != 2:
         return None
     return int(parts[0]) * 60 + int(parts[1])
+
+# ---------------------------------------------------------------------------
+# Destination filtering
+# ---------------------------------------------------------------------------
+
+ALL_DIRECTIONS = ""
+
+# Words too generic to identify a destination on their own.
+FILLER = {
+    "ST": True,
+    "AVE": True,
+    "RD": True,
+    "DR": True,
+    "BLVD": True,
+    "PKWY": True,
+    "HWY": True,
+    "THE": True,
+    "AND": True,
+    "VIA": True,
+    "TO": True,
+    "OF": True,
+}
+
+def _tokens(text):
+    """Split a destination into comparable words, dropping filler."""
+    out = []
+    cur = ""
+    upper = text.upper()
+    for i in range(len(upper) + 1):
+        ch = upper[i] if i < len(upper) else " "
+        if ch.isalnum():
+            cur += ch
+        else:
+            if len(cur) >= 2 and cur not in FILLER:
+                out.append(cur)
+            cur = ""
+    return out
+
+# Abbreviations the two sources disagree about. Expanding both sides to a
+# canonical form is safer than matching on prefixes, which would happily pair
+# "Newark" with "New York".
+CANONICAL = {
+    "SQ": "SQUARE",
+    "TERM": "TERMINAL",
+    "STA": "STATION",
+    "STN": "STATION",
+    "CTR": "CENTER",
+    "CENT": "CENTER",
+    "CENTRE": "CENTER",
+    "PK": "PARK",
+    "HTS": "HEIGHTS",
+    "EXP": "EXPRESS",
+    "EXPY": "EXPRESS",
+    "JCT": "JUNCTION",
+    "TRANSP": "TRANSPORTATION",
+    "UNIV": "UNIVERSITY",
+    "HOSP": "HOSPITAL",
+    "MED": "MEDICAL",
+}
+
+def _canonical(token):
+    return CANONICAL.get(token, token)
+
+def _token_match(a, b):
+    """Equal once abbreviations are expanded ("Sq" and "Square")."""
+    return _canonical(a) == _canonical(b)
+
+def matches_destination(dep_dest, wanted):
+    """Is this departure heading where the user asked?
+
+    The live feed and the timetable describe the same place with different
+    amounts of detail -- "Journal Square" against "Jersey City Journal Sq", or
+    "Montgomery St" against the full "Montgomery St West Side Ave Society
+    Hill". So compare against whichever description is shorter and require all
+    of its words to appear in the other, abbreviations allowed.
+
+    At least one substantial word must match, so two destinations do not pair
+    up on nothing but "St" and "Ave".
+    """
+    a = _tokens(dep_dest)
+    b = _tokens(wanted)
+    if not a or not b:
+        return False
+
+    need = b if len(b) <= len(a) else a
+    have = a if len(b) <= len(a) else b
+
+    strong = False
+    for t in need:
+        found = False
+        for h in have:
+            if _token_match(t, h):
+                found = True
+                if len(t) >= 4:
+                    strong = True
+                break
+        if not found:
+            return False
+    return strong
+
+def fetch_destinations(stop):
+    """Destinations served from a stop, for the direction picker."""
+    key = cell_key(stop["lat"], stop["lon"]) if "lat" in stop else None
+    if not key:
+        return []
+    resp = http.get("%s/dirs/%s.json" % (DATA_BASE, key), ttl_seconds = TTL_STATIC)
+    if resp.status_code != 200:
+        return []
+    return resp.json().get(stop["c"], [])
 
 # ---------------------------------------------------------------------------
 # Rendering
@@ -502,7 +615,10 @@ def selected_stop(config):
     when someone picked from the list, and the bare object from a default or
     from `pixlet render stop=...`.
     """
-    raw = config.get("stop", DEFAULT_STOP)
+    return unwrap_stop(config.get("stop", DEFAULT_STOP))
+
+def unwrap_stop(raw):
+    """Decode a stop value, tolerating pixlet's LocationBased envelope."""
     if not raw:
         raw = DEFAULT_STOP
 
@@ -528,6 +644,20 @@ def main(config):
 
     if err:
         return message(stop, err)
+
+    wanted = config.get("direction", ALL_DIRECTIONS)
+    if wanted and wanted != ALL_DIRECTIONS:
+        kept = []
+        for dep in departures:
+            if matches_destination(dep["dest"], wanted):
+                kept.append(dep)
+        if not kept:
+            # Say which filter is responsible, so an empty screen does not look
+            # like an outage.
+            return message(stop, "none to %s" % wanted)
+        departures = kept
+
+    departures = departures[:ROWS]
 
     # If everything leaving here is the same route, say so once in the header
     # and give the destinations the width the badges would have eaten.
@@ -585,6 +715,32 @@ def stop_options(location):
         )
     return options
 
+def direction_field(stop_value):
+    """A destination filter for whichever stop was just chosen.
+
+    schema.Generated re-runs this each time the stop changes, so the options
+    always belong to the selected stop rather than a stale one.
+    """
+    stop = unwrap_stop(stop_value)
+    destinations = fetch_destinations(stop)
+    if not destinations:
+        return []
+
+    options = [schema.Option(display = "All directions", value = ALL_DIRECTIONS)]
+    for dest in destinations:
+        options.append(schema.Option(display = "To %s" % dest, value = dest))
+
+    return [
+        schema.Dropdown(
+            id = "direction",
+            name = "Direction",
+            desc = "Only show departures heading this way.",
+            icon = "signsPost",
+            default = ALL_DIRECTIONS,
+            options = options,
+        ),
+    ]
+
 def get_schema():
     return schema.Schema(
         version = "1",
@@ -601,6 +757,11 @@ def get_schema():
                 desc = "The closest bus stops and light rail stations.",
                 icon = "bus",
                 handler = stop_options,
+            ),
+            schema.Generated(
+                id = "direction_picker",
+                source = "stop",
+                handler = direction_field,
             ),
         ],
     )
