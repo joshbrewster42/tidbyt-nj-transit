@@ -601,10 +601,27 @@ def build_light_rail(zf):
             }
     log("  light rail: %d trips" % len(trips))
 
+    # A train terminating here still has a departure_time on its final call.
+    # At Hoboken Terminal that is half of all calls, and showing them lists
+    # "Hoboken Term" as a destination from Hoboken Term -- an arriving train
+    # dressed up as a departure. Find each trip's last call so it can be
+    # excluded.
+    final_call = {}
+    for st in read_csv(zf, "stop_times.txt"):
+        if st["trip_id"] not in trips:
+            continue
+        try:
+            seq = int(st["stop_sequence"])
+        except (KeyError, ValueError):
+            continue
+        if seq > final_call.get(st["trip_id"], -1):
+            final_call[st["trip_id"]] = seq
+
     # stop_id -> service_id -> list of (departure_time, route, headsign)
     per_stop = defaultdict(lambda: defaultdict(list))
     stop_routes = defaultdict(set)
     stop_dirs = defaultdict(lambda: defaultdict(Counter))
+    arrivals_dropped = 0
     for st in read_csv(zf, "stop_times.txt"):
         trip = trips.get(st["trip_id"])
         if not trip:
@@ -612,11 +629,18 @@ def build_light_rail(zf):
         dep = (st.get("departure_time") or "").strip()
         if not dep:
             continue
+        try:
+            if int(st["stop_sequence"]) == final_call.get(st["trip_id"]):
+                arrivals_dropped += 1
+                continue
+        except (KeyError, ValueError):
+            pass
         # GTFS allows hours >= 24 for trips after midnight; keep them as-is and
         # let the app normalise, so a 24:15 departure still sorts after 23:50.
         per_stop[st["stop_id"]][trip["svc"]].append((dep[:5], trip["route"], trip["head"]))
         stop_routes[st["stop_id"]].add(trip["route"])
         stop_dirs[st["stop_id"]][trip["dir"]][trip["head"]] += 1
+    log("  light rail: dropped %d terminating arrivals" % arrivals_dropped)
 
     # Scoped to the services light rail actually uses, so the file the app
     # downloads stays small.
