@@ -173,19 +173,35 @@ latitude/longitude inputs, and its "Locality" box is cosmetic (typing into it
 does not geocode). The realtime address search users expect lives in the Tidbyt
 **mobile app**, which is where `schema.Location` becomes a real map picker.
 
-To bridge that locally:
+So there is a local dev UI that fills the gap:
+
+```bash
+python3 pipeline/devui.py
+```
+
+Open <http://127.0.0.1:8090>, type an address, pick the match, and it lists the
+stops the app would offer — click any one to see the actual rendered Tidbyt
+output. It starts the mock API itself, so bus departures work with no
+credentials.
+
+For a one-off from the terminal:
 
 ```bash
 python3 pipeline/geocode.py --stops "1 Hudson Place, Hoboken, NJ"
+python3 pipeline/geocode.py --stops 40.7352 -74.0277   # skips the network
 ```
 
-It prints coordinates to paste into the **Stop** section, plus the stops the app
-would offer there — so you can check the picker without clicking through the UI.
-Pass coordinates instead of an address to skip the network entirely:
+Address lookups go to OpenStreetMap Nominatim. Nothing else leaves the machine,
+and nothing is stored.
 
-```bash
-python3 pipeline/geocode.py --stops 40.7352 -74.0277
-```
+---
 
-Geocoding uses OpenStreetMap Nominatim, so the address is sent to their servers.
-Nothing is stored locally.
+## Development commands
+
+| Command | What it does |
+|---|---|
+| `python3 pipeline/build_index.py` | Rebuild `data/v1/` from the GTFS feeds |
+| `python3 pipeline/make_dev_copy.py` | Regenerate `.dev/` copy (run after editing the app) |
+| `python3 pipeline/devui.py` | Address-search dev UI + mock API |
+| `python3 pipeline/geocode.py --stops ADDR` | Coordinates and nearby stops for an address |
+| `pixlet check nj_transit_nearby.star` | Community-repo readiness |
