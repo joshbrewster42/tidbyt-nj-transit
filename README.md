@@ -207,6 +207,25 @@ than going blank, so a filter is never mistaken for an outage.
 
 ---
 
+## Refreshing
+
+A Tidbyt render is a still image with a fixed animation; it does not update
+itself. The device shows a fresh one because Tidbyt's backend re-runs the app
+on a cadence and pushes the result. Two settings shape that:
+
+- `ttl_seconds` on each HTTP call caps how stale the fetched data can be.
+  Realtime departures use 30s; the generated static files use a day.
+- `max_age` on `render.Root` bounds how long a render may be *displayed*. It is
+  set to 120s, because a countdown fails quietly: if the device loses
+  connectivity it keeps showing the last image, and a stale "3 min" is worse
+  than a blank screen because it is still believable.
+
+The dev UI's preview is a single render and stays put until you click. The
+**Auto-refresh** checkbox under the preview re-renders every 30s to approximate
+the device. Polling faster only re-serves cached data.
+
+---
+
 ## Ferry
 
 Not implemented. NJ Transit does not operate ferries — that is NY Waterway and
@@ -273,4 +292,5 @@ and nothing is stored.
 | `python3 pipeline/devui.py` | Address-search dev UI + mock API |
 | `python3 pipeline/geocode.py --stops ADDR` | Coordinates and nearby stops for an address |
 | `python3 pipeline/run_tests.py` | Assertions for the destination matcher and helpers |
+| Auto-refresh checkbox in the dev UI | Re-render every 30s, like the device does |
 | `pixlet check nj_transit_nearby.star` | Community-repo readiness |

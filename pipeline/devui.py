@@ -162,6 +162,13 @@ PAGE = """<!DOCTYPE html>
   .chip:hover { border-color: #46566a; color: var(--text); }
   .chip.on { background: var(--accent); border-color: var(--accent);
              color: #11151c; font-weight: 600; }
+  .live { display: flex; align-items: center; gap: 9px; padding: 11px 15px;
+          border-top: 1px solid var(--line); color: var(--dim); font-size: 12px; }
+  .live label { display: flex; align-items: center; gap: 6px; cursor: pointer;
+                color: var(--text); }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: #3a4654; }
+  .dot.on { background: var(--accent); animation: pulse 2s infinite; }
+  @keyframes pulse { 50% { opacity: .25; } }
 </style>
 </head>
 <body>
@@ -182,6 +189,21 @@ PAGE = """<!DOCTYPE html>
 <script>
 const $ = id => document.getElementById(id);
 let timer = null, lastStops = [];
+
+// The real device re-renders on a cadence set by Tidbyt's backend; this
+// approximates that so a preview is not a frozen snapshot. 30s matches the
+// app's realtime cache window -- polling faster only re-serves cached data.
+let live = false, liveTimer = null;
+
+function setLive(on) {
+  live = on;
+  clearInterval(liveTimer);
+  if (on) liveTimer = setInterval(() => { if (current) draw(); }, 30000);
+  // Reflect it now rather than waiting for the next redraw, or the toggle
+  // looks like it did nothing for 30 seconds.
+  const dot = document.querySelector('.dot');
+  if (dot) dot.classList.toggle('on', on);
+}
 
 $('q').addEventListener('input', () => {
   clearTimeout(timer);
@@ -266,8 +288,15 @@ async function draw() {
                           '&direction=' + encodeURIComponent(direction));
     if (!r.ok) throw new Error(await r.text());
     const blob = await r.blob();
+    const url = URL.createObjectURL(blob);
     $('out').innerHTML = card('Tidbyt preview',
-      `<div class="preview"><img src="${URL.createObjectURL(blob)}" alt="preview"></div>`);
+      `<div class="preview"><img src="${url}" alt="preview"></div>` +
+      `<div class="live">
+         <span class="dot ${live ? 'on' : ''}"></span>
+         <label><input type="checkbox" ${live ? 'checked' : ''}
+                onchange="setLive(this.checked)"> Auto-refresh every 30s</label>
+         <span style="margin-left:auto">updated ${new Date().toLocaleTimeString()}</span>
+       </div>`);
   } catch (e) {
     $('out').innerHTML = card('Tidbyt preview', `<div class="err">${esc(e.message)}</div>`);
   }

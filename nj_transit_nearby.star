@@ -35,6 +35,13 @@ CELL_SIZE = 0.1  # must match CELL_SIZE in pipeline/build_index.py
 TTL_STATIC = 86400
 TTL_REALTIME = 30
 
+# A countdown goes wrong quietly. If the device loses connectivity it keeps
+# showing whatever it last received, so a "3 min" can sit on screen long after
+# that bus has gone -- worse than showing nothing, because it is still
+# believable. max_age tells the device to stop displaying this render once it
+# is this old.
+MAX_AGE = 120
+
 # ---------------------------------------------------------------------------
 # NJ Transit realtime bus API
 # ---------------------------------------------------------------------------
@@ -693,6 +700,7 @@ def main(config):
 
     return render.Root(
         delay = 75,
+        max_age = MAX_AGE,
         child = render.Column(children = rows),
     )
 
