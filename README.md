@@ -139,21 +139,42 @@ pixlet render nj_transit_nearby.star \
 
 ---
 
-## Choosing a direction
+## Direction of travel
 
-Most stops are served in both directions, and a rider only cares about one. So
-after picking a stop you can pick a destination, and only departures heading
-that way are shown.
+Almost every bus stop sits on one side of a street and serves a single
+direction: **13,614 of 16,564 bus stops are one-directional.** A street corner
+therefore appears in the picker as two stops with the same name and different
+stop codes, which is useless unless each says where its buses go. So the
+picker shows the heading:
 
-The options come from GTFS, cleaned at build time. Bus headsigns are noisy —
-`"119 NEW YORK-Exact Fare"` and `"119J NEW YORK VIA JOURNAL SQUARE-Exact Fare"`
-are the same direction to a rider — so the route code, the fare notice and the
-`VIA` qualifier are stripped, collapsing both to `New York`. Port Authority
-still yields nearly 200 distinct destinations, so only the twelve busiest at a
-stop are offered; a longer list is worse than no filter.
+```
+Rt-9w (Sylvan Ave) at Clendinen Pl to New York          - 156, 186, 756 (0.2 mi)
+Rt-9w (Sylvan Ave) at Clendinen Pl to Englewood Cliffs  - 156, 186, 756 (0.2 mi)
+```
 
-The picker is a `schema.Generated` field sourced from `stop`, so its options
-regenerate whenever the chosen stop changes rather than going stale.
+Direction is a property of the stop, not a filter to apply afterwards. Picking
+the right side of the street is the whole job.
+
+The headings come from GTFS `direction_id`, which splits each route into its
+two directions of travel. One direction can still end at several terminals —
+the 159 outbound reaches Fort Lee, Cliffside Park and Fairview — so each
+direction is labelled with the terminal most trips actually run to, while
+keeping the full set to match departures against.
+
+A **Direction** dropdown appears only at stops that genuinely run both ways,
+which is where it earns its place. At the other 82% it would be a control with
+one meaningful choice, so it is hidden.
+
+Headsigns need heavy cleaning to get there. GTFS ships these as separate
+strings for what a rider calls one direction:
+
+```
+156  NEW YORK VIA PARK AVE
+156R NEW YORK VIA RIVER ROAD
+```
+
+Stripping the route code, the fare notice and the `VIA` qualifier collapses
+both to `New York`.
 
 **Matching is the fragile part.** Light rail destinations come from our own
 data and compare exactly. Bus destinations arrive live from the API and may be

@@ -60,10 +60,12 @@ ROUTE_TYPE_BUS = "3"
 # enough that a cell file stays a few KB.
 CELL_SIZE = 0.1
 
-# Port Authority is served by 66 routes and nearly 200 distinct
-# destinations. A dropdown that long is worse than no filter at all, so
-# only the busiest destinations at a stop are offered.
-MAX_DESTINATIONS = 12
+# GTFS direction_id splits a route into its two directions of travel, which is
+# what a rider actually means by "which way". One direction can still end at
+# several terminals -- the 159 outbound reaches Fort Lee, Cliffside Park and
+# Fairview -- so each direction gets one representative label for display and
+# keeps the full set for matching departures against.
+MAX_MATCH_TERMINALS = 20
 
 # Light rail timetables are only useful for so long, and NJ Transit's
 # calendar_dates.txt is explicit (there is no calendar.txt), so we simply keep
@@ -214,43 +216,52 @@ def dest_label(headsign, route):
 
 
 def build_bus(zf):
-    """Bus stops -> geography only. Departures come from the realtime API."""
+    """Bus stop geography, plus which way each stop faces.
+
+    Nearly every bus stop is on one side of a street and therefore serves a
+    single direction of travel: of the stops on routes 156/158/159, 279 of 295
+    are one-directional. A street corner shows up as two stops with the same
+    name and different stop_codes -- which is useless in a picker unless each
+    one says where its buses are headed.
+    """
     routes = {}
     for r in read_csv(zf, "routes.txt"):
         routes[r["route_id"]] = r["route_short_name"].strip()
 
-    trip_route = {}
+    trip_info = {}
     for t in read_csv(zf, "trips.txt"):
         route_name = routes.get(t["route_id"], "")
-        trip_route[t["trip_id"]] = (
+        trip_info[t["trip_id"]] = (
             t["route_id"],
+            t.get("direction_id", "0"),
             dest_label(t["trip_headsign"], route_name),
         )
 
-    log("  bus: %d routes, %d trips" % (len(routes), len(trip_route)))
+    log("  bus: %d routes, %d trips" % (len(routes), len(trip_info)))
 
-    # Which routes serve each stop. This is the expensive pass: 77 MB of
-    # stop_times. We only keep (stop_id -> set of route short names).
+    # The expensive pass: 77 MB of stop_times. Keep only which routes serve a
+    # stop and, per direction of travel, how often each terminal appears.
     stop_routes = defaultdict(set)
-    stop_dests = defaultdict(Counter)
+    stop_dirs = defaultdict(lambda: defaultdict(Counter))
     seen = 0
     for st in read_csv(zf, "stop_times.txt"):
         seen += 1
         if seen % 2_000_000 == 0:
             log("    ...%d stop_times rows" % seen)
-        entry = trip_route.get(st["trip_id"])
+        entry = trip_info.get(st["trip_id"])
         if entry:
-            rid, dest = entry
+            rid, direction, dest = entry
             name = routes.get(rid)
             if name:
                 stop_routes[st["stop_id"]].add(name)
                 if dest:
-                    stop_dests[st["stop_id"]][dest] += 1
+                    stop_dirs[st["stop_id"]][direction][dest] += 1
     log("  bus: scanned %d stop_times rows" % seen)
 
     stops = []
     dests = {}
     skipped_no_code = 0
+    one_way = 0
     for s in read_csv(zf, "stops.txt"):
         # The realtime API keys off the rider-facing 5-digit stop_code printed
         # on the bus stop sign, not the internal stop_id. A stop without one
@@ -268,6 +279,11 @@ def build_bus(zf):
             continue
         if lat == 0.0 and lon == 0.0:
             continue
+
+        directions = summarise_directions(stop_dirs.get(s["stop_id"], {}))
+        if len(directions) <= 1:
+            one_way += 1
+
         stops.append({
             "c": code,
             "lat": round(lat, 5),
@@ -275,12 +291,43 @@ def build_bus(zf):
             "n": title_case(strip_noise(s["stop_name"])),
             "m": "b",
             "r": sorted(served, key=_route_sort_key),
+            # Where buses from this stop are headed, so two stops sharing a
+            # name are tellable apart in the picker.
+            "t": " / ".join(d["l"] for d in directions[:2]),
         })
-        dests[code] = [d for (d, _n) in
-                       stop_dests.get(s["stop_id"], Counter()).most_common(MAX_DESTINATIONS)]
+        if directions:
+            dests[code] = directions
 
     log("  bus: %d usable stops (%d skipped: no stop_code)" % (len(stops), skipped_no_code))
+    log("  bus: %d of %d stops serve a single direction" % (one_way, len(stops)))
     return stops, dests
+
+
+def summarise_directions(by_direction):
+    """One entry per direction of travel, newest-busiest terminal as its label.
+
+    Returns [{"l": label, "m": [terminals to match departures against]}].
+    The label is the terminal most trips actually run to, so the 158 outbound
+    reads "Fort Lee" rather than "Fort Lee Med West"; the match list keeps
+    every terminal in that direction, so a filter on it still catches the
+    Cliffside Park and Fairview runs that share the direction.
+    """
+    out = []
+    for direction in sorted(by_direction.keys()):
+        counter = by_direction[direction]
+        if not counter:
+            continue
+        ranked = counter.most_common(MAX_MATCH_TERMINALS)
+        out.append({
+            "l": ranked[0][0],
+            "m": [name for (name, _count) in ranked],
+        })
+
+    # Two directions that resolve to the same label tell a rider nothing.
+    if len(out) == 2 and out[0]["l"] == out[1]["l"]:
+        merged = out[0]["m"] + [m for m in out[1]["m"] if m not in out[0]["m"]]
+        return [{"l": out[0]["l"], "m": merged[:MAX_MATCH_TERMINALS]}]
+    return out
 
 
 def _route_sort_key(name):
@@ -310,12 +357,14 @@ def build_light_rail(zf):
                 "route": route_name,
                 "head": clean_headsign(t["trip_headsign"], route_name),
                 "svc": t["service_id"],
+                "dir": t.get("direction_id", "0"),
             }
     log("  light rail: %d trips" % len(trips))
 
     # stop_id -> service_id -> list of (departure_time, route, headsign)
     per_stop = defaultdict(lambda: defaultdict(list))
     stop_routes = defaultdict(set)
+    stop_dirs = defaultdict(lambda: defaultdict(Counter))
     for st in read_csv(zf, "stop_times.txt"):
         trip = trips.get(st["trip_id"])
         if not trip:
@@ -327,6 +376,7 @@ def build_light_rail(zf):
         # let the app normalise, so a 24:15 departure still sorts after 23:50.
         per_stop[st["stop_id"]][trip["svc"]].append((dep[:5], trip["route"], trip["head"]))
         stop_routes[st["stop_id"]].add(trip["route"])
+        stop_dirs[st["stop_id"]][trip["dir"]][trip["head"]] += 1
 
     # date -> active service ids. NJ Transit ships only calendar_dates.txt,
     # where exception_type 1 means "service added on this date".
@@ -361,6 +411,7 @@ def build_light_rail(zf):
         # Dedupe headsigns into a table; they repeat hundreds of times per stop
         # and are the bulk of the bytes otherwise.
         heads = sorted({h for svc in per_stop[sid].values() for (_, _, h) in svc})
+        directions = summarise_directions(stop_dirs.get(sid, {}))
 
         stops.append({
             "c": sid,
@@ -369,10 +420,12 @@ def build_light_rail(zf):
             "n": name,
             "m": "l",
             "r": sorted(stop_routes[sid]),
+            "t": " / ".join(d["l"] for d in directions[:2]),
         })
         # Light rail headsigns are already cleaned, so these match what the
         # app renders exactly -- filtering is an equality test, not a guess.
-        lr_dests[sid] = heads
+        if directions:
+            lr_dests[sid] = directions
         head_idx = {h: i for i, h in enumerate(heads)}
         svc_dep = {}
         for svc, deps in per_stop[sid].items():
@@ -454,7 +507,7 @@ def main():
             "bus_stops": len(bus_stops),
             "light_rail_stops": len(lr_stops),
             "cells": len(cells),
-            "max_destinations": MAX_DESTINATIONS,
+            "max_match_terminals": MAX_MATCH_TERMINALS,
             "service_dates": len(calendar),
         },
         "light_rail_routes": {

@@ -223,7 +223,7 @@ async function pick(lat, lon) {
     `<div class="row" id="s${i}" onclick="show(${i})">
        <span class="mi">${s.mi.toFixed(1)} mi</span>
        <span class="tag ${s.m}">${s.m === 'l' ? 'RAIL' : 'BUS'}</span>
-       <span class="nm">${esc(s.n)}<small>${esc((s.r || []).join(', '))}</small></span>
+       <span class="nm">${esc(s.n)}${s.t ? ' <span style="color:var(--accent)">to ' + esc(s.t) + '</span>' : ''}<small>${esc((s.r || []).join(', '))}</small></span>
      </div>`).join(''));
   show(0);
 }
@@ -242,11 +242,12 @@ async function show(i) {
 async function loadDirections(s) {
   const r = await fetch(`/api/dests?lat=${s.lat}&lon=${s.lon}&code=${encodeURIComponent(s.c)}`);
   const dests = await r.json();
-  if (!dests.length) { $('dirs').innerHTML = ''; return; }
+  // The app hides this picker at one-directional stops, so mirror that.
+  if (dests.length < 2) { $('dirs').innerHTML = ''; return; }
   $('dirs').innerHTML = card('Direction',
     '<div class="chips">' +
-    `<span class="chip on" onclick="setDir('')">All directions</span>` +
-    dests.map(d => `<span class="chip" onclick="setDir(${JSON.stringify(d).replace(/"/g,'&quot;')})">To ${esc(d)}</span>`).join('') +
+    `<span class="chip on" onclick="setDir('')">Both directions</span>` +
+    dests.map(d => `<span class="chip" onclick="setDir(${JSON.stringify(JSON.stringify(d.m)).replace(/"/g,'&quot;')})">To ${esc(d.l)}</span>`).join('') +
     '</div>');
 }
 

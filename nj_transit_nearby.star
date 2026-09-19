@@ -437,6 +437,31 @@ def matches_destination(dep_dest, wanted):
             return False
     return strong
 
+def filter_by_direction(departures, raw):
+    """Keep only departures heading the chosen way.
+
+    A direction is a set of terminals, not one place, so a departure counts if
+    it matches any of them. Returns a message string instead of a list when the
+    filter leaves nothing, so the caller can explain the empty screen.
+    """
+    if not raw or raw == ALL_DIRECTIONS:
+        return departures
+
+    terminals = json.decode(raw)
+    if type(terminals) != "list" or not terminals:
+        return departures
+
+    kept = []
+    for dep in departures:
+        for terminal in terminals:
+            if matches_destination(dep["dest"], terminal):
+                kept.append(dep)
+                break
+
+    if not kept:
+        return "none to %s" % terminals[0]
+    return kept
+
 def fetch_destinations(stop):
     """Destinations served from a stop, for the direction picker."""
     key = cell_key(stop["lat"], stop["lon"]) if "lat" in stop else None
@@ -645,17 +670,11 @@ def main(config):
     if err:
         return message(stop, err)
 
-    wanted = config.get("direction", ALL_DIRECTIONS)
-    if wanted and wanted != ALL_DIRECTIONS:
-        kept = []
-        for dep in departures:
-            if matches_destination(dep["dest"], wanted):
-                kept.append(dep)
-        if not kept:
-            # Say which filter is responsible, so an empty screen does not look
-            # like an outage.
-            return message(stop, "none to %s" % wanted)
-        departures = kept
+    departures = filter_by_direction(departures, config.get("direction", ALL_DIRECTIONS))
+    if type(departures) == "string":
+        # Say which filter is responsible, so an empty screen does not read as
+        # an outage.
+        return message(stop, departures)
 
     departures = departures[:ROWS]
 
@@ -694,14 +713,20 @@ def stop_options(location):
     options = []
     for (dist_km, stop) in nearby_stops(lat, lon):
         routes = ", ".join(stop.get("r", [])[:4])
-        kind = "Light Rail" if stop["m"] == "l" else "Bus"
 
         # Starlark's % operator has no precision specifier, so round by hand.
         tenths = int(dist_km * 0.621371 * 10 + 0.5)
         miles = "%d.%d" % (tenths // 10, tenths % 10)
+
+        # Most stops sit on one side of a street and serve one direction, so a
+        # street corner appears twice under the same name. Saying where each
+        # one's buses are headed is the only way to tell them apart.
+        heading = stop.get("t", "")
+        name = "%s to %s" % (stop["n"], heading) if heading else stop["n"]
+
         options.append(
             schema.Option(
-                display = "%s - %s (%s, %s mi)" % (stop["n"], routes, kind, miles),
+                display = "%s - %s (%s mi)" % (name, routes, miles),
                 value = json.encode(stop),
             ),
         )
@@ -716,25 +741,35 @@ def stop_options(location):
     return options
 
 def direction_field(stop_value):
-    """A destination filter for whichever stop was just chosen.
+    """A direction-of-travel filter, but only where it earns its place.
 
-    schema.Generated re-runs this each time the stop changes, so the options
-    always belong to the selected stop rather than a stale one.
+    Most stops serve a single direction -- 13,614 of 16,564 bus stops -- and
+    there the stop itself already answers "which way", so no filter is shown.
+    The picker appears only at stops that genuinely run both ways.
     """
     stop = unwrap_stop(stop_value)
-    destinations = fetch_destinations(stop)
-    if not destinations:
+    directions = fetch_destinations(stop)
+    if len(directions) < 2:
         return []
 
-    options = [schema.Option(display = "All directions", value = ALL_DIRECTIONS)]
-    for dest in destinations:
-        options.append(schema.Option(display = "To %s" % dest, value = dest))
+    options = [schema.Option(display = "Both directions", value = ALL_DIRECTIONS)]
+    for entry in directions:
+        options.append(
+            schema.Option(
+                display = "To %s" % entry["l"],
+                # Carry the whole set of terminals in this direction, so the
+                # filter still catches the runs that end somewhere else on the
+                # same heading -- the 159 outbound reaches Fort Lee, Cliffside
+                # Park and Fairview, and all three mean "outbound".
+                value = json.encode(entry["m"]),
+            ),
+        )
 
     return [
         schema.Dropdown(
             id = "direction",
             name = "Direction",
-            desc = "Only show departures heading this way.",
+            desc = "Which way you are travelling.",
             icon = "signsPost",
             default = ALL_DIRECTIONS,
             options = options,
