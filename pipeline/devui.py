@@ -350,6 +350,45 @@ class Handler(BaseHTTPRequestHandler):
         self._send("not found", "text/plain", status=404)
 
 
+def check_mock():
+    """Prove the mock can answer before anyone clicks anything.
+
+    The mock reads the same generated files the app does, so a change to their
+    shape breaks it. When it raised mid-request the connection just closed,
+    and the app reported a bare "EOF" -- which reads like an app bug rather
+    than a stale fixture. Failing loudly at startup is cheaper to diagnose.
+    """
+    sample = None
+    cells_dir = os.path.join(DATA, "cells")
+    for fn in sorted(os.listdir(cells_dir)):
+        with open(os.path.join(cells_dir, fn), encoding="utf-8") as fh:
+            for stop in json.load(fh):
+                if stop["m"] == "b":
+                    sample = stop["c"]
+                    break
+        if sample:
+            break
+    if not sample:
+        return
+
+    try:
+        body = urllib.parse.urlencode({"token": "x", "stop": sample}).encode()
+        req = urllib.request.Request(
+            "http://127.0.0.1:%d/api/BUSDV2/getBusDV" % mock_server.PORT, data=body)
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            trips = json.load(resp).get("DVTrip", [])
+        if not trips:
+            print("  WARNING: mock returned no departures for stop %s" % sample,
+                  file=sys.stderr)
+        else:
+            print("  mock self-check ok (stop %s -> %d departures)"
+                  % (sample, len(trips)), file=sys.stderr)
+    except Exception as exc:
+        print("  WARNING: mock self-check failed: %s" % exc, file=sys.stderr)
+        print("  Bus previews will fail. The mock reads data/v1/ -- "
+              "did its format change?", file=sys.stderr)
+
+
 def main():
     if not os.path.isdir(DATA):
         sys.exit("No generated data -- run: python3 pipeline/build_index.py")
@@ -361,6 +400,8 @@ def main():
     threading.Thread(target=mock.serve_forever, daemon=True).start()
     print("Mock NJ Transit API on http://127.0.0.1:%d" % mock_server.PORT,
           file=sys.stderr)
+
+    check_mock()
     print("Dev UI ready:  http://127.0.0.1:%d" % PORT, file=sys.stderr)
 
     HTTPServer(("127.0.0.1", PORT), Handler).serve_forever()

@@ -64,11 +64,15 @@ def routes_for_stop(stop_code):
 
 
 def dests_for_stop(stop_code):
-    """The stop's real destinations, so the direction filter is testable.
+    """The stop's real terminals, so the direction filter is testable.
 
     Inventing destinations from a fixed list made filtering untestable: a
-    rider would pick "Journal Square" and the mock would emit somewhere else
+    rider would pick "Fort Lee" and the mock would emit somewhere else
     entirely, which looks like a broken filter rather than a fake feed.
+
+    The generated file groups terminals by direction of travel --
+    [{"l": label, "m": [terminals]}] -- and a stop's departures run to any of
+    them, so flatten the lot.
     """
     if not _stop_dests_cache:
         dirs_dir = os.path.join(ROOT, "dirs")
@@ -76,7 +80,11 @@ def dests_for_stop(stop_code):
             for fn in os.listdir(dirs_dir):
                 if fn.endswith(".json"):
                     with open(os.path.join(dirs_dir, fn), encoding="utf-8") as fh:
-                        _stop_dests_cache.update(json.load(fh))
+                        for code, directions in json.load(fh).items():
+                            flat = []
+                            for entry in directions:
+                                flat.extend(entry.get("m", []))
+                            _stop_dests_cache[code] = flat
     return _stop_dests_cache.get(str(stop_code), [])
 
 
@@ -148,6 +156,16 @@ class Handler(SimpleHTTPRequestHandler):
         return self.rfile.read(length)
 
     def do_POST(self):
+        try:
+            self._handle_post()
+        except Exception as exc:
+            # Dropping the connection surfaces in the app as an unhelpful
+            # "EOF"; a real response says what actually broke.
+            import traceback
+            traceback.print_exc()
+            self._json({"message": "mock error: %s" % exc, "DVTrip": []}, status=500)
+
+    def _handle_post(self):
         raw = self._read_body().decode("utf-8", "replace")
 
         if self.path.endswith("/authenticateUser"):
