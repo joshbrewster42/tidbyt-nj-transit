@@ -585,7 +585,9 @@ python3 pipeline/devui.py
 ```
 
 Open <http://127.0.0.1:8090>, type an address, pick the match, and click stops
-to add them in the order you want. It starts the mock API itself, so bus
+to add them in the order you want. Each row names its direction, matching the
+real picker one for one — the preview offers exactly what the app can be
+configured to do, and nothing it cannot. It starts the mock API itself, so bus
 departures work with no credentials.
 
 It also rebuilds the dev copy of the app whenever the source is newer. That

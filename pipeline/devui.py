@@ -56,36 +56,6 @@ def haversine_km(lat1, lon1, lat2, lon2):
     return 2 * r * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 
-GROUP_RADIUS_KM = 0.25
-
-
-def group_bus_stops(stops):
-    """Mirror the app: collapse the two kerbs of a junction into one entry."""
-    out, groups = [], {}
-    for s in stops:
-        if s["m"] != "b":
-            out.append(s)
-            continue
-        found = groups.get(s["n"])
-        if found and haversine_km(found["lat"], found["lon"],
-                                  s["lat"], s["lon"]) <= GROUP_RADIUS_KM:
-            heading = s.get("t", "")
-            if any(m[1] == heading for m in found["g"]):
-                continue  # the feed listing one place twice
-            found["g"].append([s["c"], heading])
-            for route in s.get("r", []):
-                if route not in found["r"]:
-                    found["r"].append(route)
-            found["t"] = " / ".join(m[1] for m in found["g"] if m[1])
-            continue
-        group = dict(s)
-        group["r"] = list(s.get("r", []))
-        group["g"] = [[s["c"], s.get("t", "")]]
-        groups[s["n"]] = group
-        out.append(group)
-    return out
-
-
 def nearby(lat, lon, mode="", limit=25):
     """Mirror the app's own cell lookup so results match the real picker.
 
@@ -112,11 +82,10 @@ def nearby(lat, lon, mode="", limit=25):
         item["mi"] = round(d * 0.621371, 2)
         scored.append(item)
     scored.sort(key=lambda s: s["mi"])
-    scored = group_bus_stops(scored)
 
     if mode:
         # One mode is already its own group; nothing can be crowded out.
-        return scored[:limit]
+        return expand_directions(scored[:limit])
 
     chosen = scored[:limit]
     seen = {s["m"] + s["c"] for s in chosen}
@@ -132,7 +101,27 @@ def nearby(lat, lon, mode="", limit=25):
             present += 1
 
     chosen.sort(key=lambda s: s["mi"])
-    return chosen
+    return expand_directions(chosen)
+
+
+def expand_directions(stops):
+    """One entry per stop per direction, mirroring the app's stop_options.
+
+    Direction is part of the choice rather than a separate control, because a
+    generated dropdown cannot have a second field hanging off it. The preview
+    has to offer the same thing the real picker does, or it is showing
+    something the app cannot be configured to do.
+    """
+    out = []
+    for s in stops:
+        entries = destinations_for(s["lat"], s["lon"], s["c"]) or [
+            {"l": s.get("t", ""), "m": []}]
+        for entry in entries:
+            item = dict(s)
+            item["dl"] = entry["l"]
+            item["d"] = entry["m"]
+            out.append(item)
+    return out
 
 
 def destinations_for(lat, lon, code):
@@ -145,7 +134,7 @@ def destinations_for(lat, lon, code):
         return json.load(fh).get(code, [])
 
 
-SLOT_KEYS = ("c", "n", "m", "r", "lat", "lon", "t")
+SLOT_KEYS = ("c", "m", "d")
 
 
 def refresh_dev_copy():
@@ -180,10 +169,7 @@ def render_slots(slots):
     args = []
     for i, slot in enumerate(slots[:6], start=1):
         stop = {k: slot["stop"][k] for k in SLOT_KEYS if k in slot["stop"]}
-        args.append("mode%d=%s" % (i, stop.get("m", "b")))
         args.append("stop%d=%s" % (i, json.dumps(stop)))
-        if slot.get("direction"):
-            args.append("direction%d=%s" % (i, slot["direction"]))
 
     with tempfile.TemporaryDirectory() as tmp:
         out = os.path.join(tmp, "out.webp")
@@ -388,7 +374,7 @@ function renderStops() {
     `<div class="row" id="s${lastStops.indexOf(s)}" onclick="addStop(${lastStops.indexOf(s)})">
        <span class="mi">${s.mi.toFixed(1)} mi</span>
        <span class="tag ${s.m}">${MODE_TAG[s.m] || s.m.toUpperCase()}</span>
-       <span class="nm">${esc(s.n)}${s.t ? ' <span style="color:var(--accent)">to ' + esc(s.t) + '</span>' : ''}<small>${esc((s.r || []).join(', '))}</small></span>
+       <span class="nm">${esc(s.n)}${s.dl ? ' <span style="color:var(--accent)">to ' + esc(s.dl) + '</span>' : ''}<small>${esc((s.r || []).join(', '))}</small></span>
      </div>`).join(''));
   $('hint').textContent = 'Click stops to add them, in the order you want them shown.';
 }
@@ -401,27 +387,9 @@ let watching = [];
 async function addStop(i) {
   if (watching.length >= MAX_SLOTS) return;
   const s = lastStops[i];
-  if (watching.some(w => w.stop.m === s.m && w.stop.c === s.c)) return;
-
-  let dirs = [];
-  if ((s.g || []).length > 1) {
-    // A grouped bus stop: the choice names which kerb to query. It carries
-    // that kerb's terminals too, because 17% of bus stops serve both
-    // directions and the code alone would not narrow what comes back.
-    dirs = [];
-    for (const m of s.g) {
-      const rr = await fetch(`/api/dests?lat=${s.lat}&lon=${s.lon}&code=${encodeURIComponent(m[0])}`);
-      const entries = await rr.json();
-      let terms = [];
-      for (const e of entries) if (!terms.length || e.l === m[1]) terms = e.m;
-      dirs.push({l: m[1] || 'This stop', v: JSON.stringify({c: m[0], m: terms})});
-    }
-  } else {
-    const r = await fetch(`/api/dests?lat=${s.lat}&lon=${s.lon}&code=${encodeURIComponent(s.c)}`);
-    const d = await r.json();
-    if (d.length >= 2) dirs = d.map(x => ({l: x.l, v: JSON.stringify(x.m)}));
-  }
-  watching.push({stop: s, direction: dirs.length ? dirs[0].v : '', dirs: dirs});
+  // A stop appears once per direction, so identity includes the direction.
+  if (watching.some(w => w.stop.m === s.m && w.stop.c === s.c && w.stop.dl === s.dl)) return;
+  watching.push({stop: s});
   renderWatch();
   draw();
 }
@@ -432,30 +400,14 @@ function removeSlot(i) {
   if (watching.length) draw(); else $('out').innerHTML = '';
 }
 
-function setSlotDir(i, value) {
-  watching[i].direction = value;
-  draw();
-}
-
 function renderWatch() {
   if (!watching.length) { $('watch').innerHTML = ''; return; }
-  const rows = watching.map((w, i) => {
-    const grouped = (w.stop.g || []).length > 1;
-    const opts = w.dirs.length
-      ? `<select onchange="setSlotDir(${i}, this.value)">` +
-        (grouped ? '' : '<option value="">Both directions</option>') +
-        w.dirs.map(d => `<option value='${esc(d.v)}'
-             ${w.direction === d.v ? 'selected' : ''}>To ${esc(d.l)}</option>`).join('') +
-        `</select>`
-      : '';
-    return `<div class="slot">
+  const rows = watching.map((w, i) => `<div class="slot">
         <span class="num">${i + 1}</span>
         <span class="tag ${w.stop.m}">${MODE_TAG[w.stop.m]}</span>
-        <span class="nm">${esc(w.stop.n)}</span>
-        ${opts}
+        <span class="nm">${esc(w.stop.n)}${w.stop.dl ? ' <span style="color:var(--accent)">to ' + esc(w.stop.dl) + '</span>' : ''}</span>
         <span class="x" onclick="removeSlot(${i})" title="remove">&times;</span>
-      </div>`;
-  }).join('');
+      </div>`).join('');
   const note = watching.length >= MAX_SLOTS
     ? '<div class="full">All six slots used — remove one to add another.</div>' : '';
   $('watch').innerHTML = card('Watching (in order)', rows + note);
@@ -464,7 +416,7 @@ function renderWatch() {
 async function draw() {
   if (!watching.length) return;
   $('out').innerHTML = card('Tidbyt preview', '<div class="empty">Rendering…</div>');
-  const payload = watching.map(w => ({stop: w.stop, direction: w.direction}));
+  const payload = watching.map(w => ({stop: w.stop}));
   try {
     const r = await fetch('/api/render?slots=' + encodeURIComponent(JSON.stringify(payload)));
     if (!r.ok) throw new Error(await r.text());

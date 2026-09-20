@@ -107,8 +107,6 @@ COLOR_OK = "#4ade80"
 
 FONT = "tom-thumb"
 
-MODE_NAMES = {"b": "Bus", "l": "Light Rail", "f": "Ferry"}
-
 # Leading badges for the stop picker. Every entry gets one, including buses:
 # tagging only the exceptions means the common case carries no marker at all,
 # and a list where most rows look identical is a list nobody can scan.
@@ -428,11 +426,8 @@ def _hhmm_to_minutes(hhmm):
 # Destination filtering
 # ---------------------------------------------------------------------------
 
-# A dropdown option's value cannot be empty, and a dropdown must carry a
-# default: pixlet answers "Field validation for 'Value' failed on the
-# 'required' tag". So both "no filter" and "slot unused" need real sentinels
-# rather than "".
-ALL_DIRECTIONS = "all"
+# A dropdown option's value cannot be empty and a dropdown must carry a
+# default, so an unused slot needs a sentinel rather than "".
 SLOT_UNUSED = "off"
 
 # Words too generic to identify a destination on their own.
