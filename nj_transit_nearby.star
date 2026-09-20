@@ -70,10 +70,22 @@ NJT_PASSWORD_ENC = "REPLACE_WITH_PIXLET_ENCRYPT_OUTPUT_PASSWORD"
 # ---------------------------------------------------------------------------
 # Display
 # ---------------------------------------------------------------------------
-ROWS = 3  # departures that fit under the header on a 64x32 display
+# Six numbered slots. A Tidbyt schema is a static form with no "add another",
+# so the number of things that can be watched has to be fixed up front.
+SLOTS = 6
+
+# With no header, four 7px lines fit on a 32px display. More than four watched
+# stops pages between screens.
+LINES_PER_PAGE = 4
+
+# A page holds for this long before the next one. At DELAY_MS per frame that is
+# PAGE_HOLD_MS / DELAY_MS copies of the same widget, because render.Animation
+# treats every child as exactly one frame.
+DELAY_MS = 100
+PAGE_HOLD_MS = 4000
 
 # Fetch more than fits, so filtering by destination still has something to
-# choose from. Truncation to ROWS happens after the filter, never before.
+# choose from. Only the soonest is shown, but the filter needs candidates.
 FETCH_LIMIT = 15
 
 # Official NJ Transit route colors, from routes.txt in the GTFS feed.
@@ -580,51 +592,71 @@ def wait_color(when):
 
 # tom-thumb glyphs are 3px wide with 1px of spacing.
 CHAR_W = 4
-WAIT_W = 14  # fits "now" and up to three digits plus the "m"
+WAIT_W = 13  # fits "now" and up to two digits plus the "m"
 
-def departure_row(stop, dep, show_badge):
-    """One line: optional route badge, scrolling destination, minutes away.
+def fit_text(text, width):
+    """Cut text to what actually fits, then left-align it in that width.
 
-    At a light rail platform every departure is the same line, so the badge
-    moves to the header and the destination gets those pixels instead. At a bus
-    stop served by several routes the badge has to stay on each row.
+    A Box centres its child, so text wider than the box overflows at both ends
+    and you read its middle -- "Midtown / W. 39th St." shows up as
+    "wn / W. 39th". Trimming first, then padding the remainder, keeps every row
+    starting at the same column.
     """
+    room = width // CHAR_W
+    shown = text[:room] if len(text) > room else text
+    pad = width - CHAR_W * len(shown)
+    children = [render.Text(content = shown, font = FONT, color = COLOR_TEXT)]
+    if pad > 0:
+        children.append(render.Box(width = pad, height = 7))
+    return render.Row(children = children)
+
+def watch_line(item):
+    """One watched stop as a single row: route badge, where it goes, minutes.
+
+    The stop itself is deliberately not shown. Four rows of "Blvd East at 47th
+    St" would fill the screen with names already known -- what changes, and
+    what is worth a glance, is where the next one goes and how long it is away.
+    """
+    stop = item["stop"]
+    dep = item["dep"]
+
+    if not dep:
+        return render.Row(
+            cross_align = "center",
+            children = [
+                render.Box(width = 3, height = 7, color = badge_color(stop, "")),
+                render.Box(width = 2, height = 7),
+                fit_text(item["err"] or "no service", 59),
+            ],
+        )
+
     route = dep["route"]
-    badge_w = min(CHAR_W * len(route) + 3, 26) if show_badge else 0
+    badge_w = min(CHAR_W * len(route) + 3, 26) if route else 3
     dest_w = 64 - badge_w - 1 - WAIT_W
 
-    children = []
-    if show_badge:
-        color = badge_color(stop, route)
-        children.append(
-            render.Box(
-                width = badge_w,
-                height = 7,
-                color = color,
-                child = render.Text(
-                    content = route,
-                    font = FONT,
-                    color = text_on(color),
-                ),
+    color = badge_color(stop, route)
+    if route:
+        badge = render.Box(
+            width = badge_w,
+            height = 7,
+            color = color,
+            child = render.Text(
+                content = route,
+                font = FONT,
+                color = text_on(color),
             ),
         )
-    children.append(render.Box(width = 1, height = 7))
+    else:
+        # Ferries have no useful route name -- the route is its destination --
+        # so the badge shrinks to a plain colour stripe.
+        badge = render.Box(width = badge_w, height = 7, color = color)
 
     return render.Row(
         cross_align = "center",
-        children = children + [
-            render.Box(
-                width = dest_w,
-                height = 7,
-                child = render.Marquee(
-                    width = dest_w,
-                    child = render.Text(
-                        content = dep["dest"],
-                        font = FONT,
-                        color = COLOR_TEXT,
-                    ),
-                ),
-            ),
+        children = [
+            badge,
+            render.Box(width = 1, height = 7),
+            fit_text(dep["dest"], dest_w),
             render.Box(
                 width = WAIT_W,
                 height = 7,
@@ -647,70 +679,35 @@ def _short_wait(when):
         return digits + "m"
     return w[:5]
 
-def header(stop, route = None):
-    """Stop name, with a color chip for the line.
+def page_of(items):
+    """One screen: up to four watched stops, padded to a stable height."""
+    rows = []
+    for item in items:
+        rows.append(watch_line(item))
+        rows.append(render.Box(height = 1))
+    return render.Column(children = rows)
 
-    When every departure below shares one route, that route's name rides up
-    here instead of being repeated on each row.
-    """
-    routes = stop.get("r", [])
-    chip_route = route if route else (routes[0] if routes else "")
-    label = "%s %s" % (route, stop.get("n", "")) if route else stop.get("n", "NJ Transit")
-
-    return render.Row(
-        cross_align = "center",
-        children = [
-            render.Box(
-                width = 3,
-                height = 7,
-                color = badge_color(stop, chip_route),
-            ),
-            render.Box(width = 2, height = 7),
-            render.Marquee(
-                width = 59,
-                child = render.Text(
-                    content = label,
-                    font = FONT,
-                    color = COLOR_TEXT,
-                ),
-            ),
-        ],
-    )
-
-def message(stop, text):
+def message_screen(text):
     return render.Root(
-        child = render.Column(
-            children = [
-                header(stop),
-                render.Box(height = 1),
-                render.Box(
-                    height = 22,
-                    child = render.WrappedText(
-                        content = text,
-                        font = FONT,
-                        color = COLOR_DIM,
-                        align = "center",
-                    ),
-                ),
-            ],
+        child = render.Box(
+            child = render.WrappedText(
+                content = text,
+                font = FONT,
+                color = COLOR_DIM,
+                align = "center",
+            ),
         ),
     )
 
-def selected_stop(config):
-    """The stop the user picked, unwrapped.
-
-    A LocationBased selection does not arrive as the string we put in
-    schema.Option.value. Pixlet wraps it as {"display": ..., "value": ...},
-    so the real payload is one decode deeper. Handle both shapes: the wrapper
-    when someone picked from the list, and the bare object from a default or
-    from `pixlet render stop=...`.
-    """
-    return unwrap_stop(config.get("stop", DEFAULT_STOP))
-
 def unwrap_stop(raw):
-    """Decode a stop value, tolerating pixlet's LocationBased envelope."""
+    """Decode a stop value, tolerating pixlet's LocationBased envelope.
+
+    A LocationBased selection does not arrive as the string put in
+    schema.Option.value; pixlet wraps it as {"display": ..., "value": ...}, so
+    the real payload is one decode deeper.
+    """
     if not raw:
-        raw = DEFAULT_STOP
+        return json.decode(DEFAULT_STOP)
 
     stop = json.decode(raw)
     if type(stop) == "dict" and "m" not in stop and "value" in stop:
@@ -721,12 +718,33 @@ def unwrap_stop(raw):
         return json.decode(DEFAULT_STOP)
     return stop
 
-def main(config):
-    stop = selected_stop(config)
+def stop_configured(raw):
+    """Has this slot actually been given a stop?"""
+    if not raw:
+        return False
+    decoded = json.decode(raw)
+    if type(decoded) == "dict" and "value" in decoded and "m" not in decoded:
+        decoded = json.decode(decoded["value"])
+    return type(decoded) == "dict" and "c" in decoded and "m" in decoded
 
-    tz = config.get("$tz", "America/New_York")
-    now = time.now().in_location(tz)
+def configured_slots(config):
+    """The slots that have been filled in, in the order they appear."""
+    out = []
+    for slot in range(1, SLOTS + 1):
+        if config.get("mode%d" % slot, "off") == "off":
+            continue
+        raw = config.get("stop%d" % slot)
+        if not stop_configured(raw):
+            continue
+        out.append({
+            "stop": unwrap_stop(raw),
+            "direction": config.get("direction%d" % slot, ALL_DIRECTIONS),
+        })
+    return out
 
+def next_departure(slot, now):
+    """The soonest departure for one watched stop, after its direction filter."""
+    stop = slot["stop"]
     if stop["m"] == "l":
         departures, err = scheduled_departures("lr", stop["c"], now)
     elif stop["m"] == "f":
@@ -735,38 +753,49 @@ def main(config):
         departures, err = bus_departures(stop["c"])
 
     if err:
-        return message(stop, err)
+        return {"stop": stop, "dep": None, "err": err}
 
-    departures = filter_by_direction(departures, config.get("direction", ALL_DIRECTIONS))
-    if type(departures) == "string":
-        # Say which filter is responsible, so an empty screen does not read as
-        # an outage.
-        return message(stop, departures)
+    filtered = filter_by_direction(departures, slot["direction"])
+    if type(filtered) == "string":
+        return {"stop": stop, "dep": None, "err": "none that way"}
+    if not filtered:
+        return {"stop": stop, "dep": None, "err": "no departures"}
 
-    departures = departures[:ROWS]
+    return {"stop": stop, "dep": filtered[0], "err": None}
 
-    # If everything leaving here is the same route, say so once in the header
-    # and give the destinations the width the badges would have eaten.
-    distinct = {d["route"]: True for d in departures}.keys()
-    uniform = len(distinct) == 1
+def main(config):
+    tz = config.get("$tz", "America/New_York")
+    now = time.now().in_location(tz)
 
-    rows = [
-        header(stop, departures[0]["route"] if uniform else None),
-        render.Box(height = 1),
-    ]
-    for dep in departures:
-        rows.append(departure_row(stop, dep, not uniform))
-        rows.append(render.Box(height = 1))
+    slots = configured_slots(config)
+    if not slots:
+        return message_screen("pick a stop")
+
+    items = []
+    for slot in slots:
+        items.append(next_departure(slot, now))
+
+    pages = []
+    for start in range(0, len(items), LINES_PER_PAGE):
+        pages.append(page_of(items[start:start + LINES_PER_PAGE]))
+
+    if len(pages) == 1:
+        return render.Root(delay = DELAY_MS, max_age = MAX_AGE, child = pages[0])
+
+    # render.Animation gives each child exactly one frame, so a page has to be
+    # repeated to stay up long enough to read.
+    frames = []
+    repeats = PAGE_HOLD_MS // DELAY_MS
+    for page in pages:
+        for _ in range(repeats):
+            frames.append(page)
 
     return render.Root(
-        delay = 75,
+        delay = DELAY_MS,
         max_age = MAX_AGE,
-        child = render.Column(children = rows),
+        show_full_animation = True,
+        child = render.Animation(children = frames),
     )
-
-# ---------------------------------------------------------------------------
-# Configuration schema
-# ---------------------------------------------------------------------------
 
 def stop_options(location, mode = ""):
     """Nearest stops to the location the user picked in the mobile app.
@@ -850,25 +879,68 @@ MODE_PICKERS = {
     "f": ["Terminal", "Ferry terminals near you.", "ship", stops_ferry],
 }
 
-def stop_field(mode):
-    """The stop picker for whichever mode was chosen.
+def slot_stop_field(mode, slot):
+    """The stop picker for one slot, in whichever mode that slot chose.
 
     A single list of everything nearby runs to two dozen entries, almost all
     of them bus stops. Choosing the mode first turns that into a short list of
     the thing actually being looked for.
     """
+    if mode == "off":
+        return []
+
     picker = MODE_PICKERS.get(mode, MODE_PICKERS["all"])
     return [
         schema.LocationBased(
-            id = "stop",
-            name = picker[0],
+            id = "stop%d" % slot,
+            name = "%s %d" % (picker[0], slot),
             desc = picker[1],
             icon = picker[2],
             handler = picker[3],
         ),
     ]
 
-def direction_field(stop_value):
+# Pixlet resolves a schema handler by its function name, so handlers have to be
+# top-level and cannot be closures over a slot number. Hence one thin pair of
+# wrappers per slot.
+
+def stop_field_1(mode):
+    return slot_stop_field(mode, 1)
+
+def direction_field_1(stop_value):
+    return slot_direction_field(stop_value, 1)
+
+def stop_field_2(mode):
+    return slot_stop_field(mode, 2)
+
+def direction_field_2(stop_value):
+    return slot_direction_field(stop_value, 2)
+
+def stop_field_3(mode):
+    return slot_stop_field(mode, 3)
+
+def direction_field_3(stop_value):
+    return slot_direction_field(stop_value, 3)
+
+def stop_field_4(mode):
+    return slot_stop_field(mode, 4)
+
+def direction_field_4(stop_value):
+    return slot_direction_field(stop_value, 4)
+
+def stop_field_5(mode):
+    return slot_stop_field(mode, 5)
+
+def direction_field_5(stop_value):
+    return slot_direction_field(stop_value, 5)
+
+def stop_field_6(mode):
+    return slot_stop_field(mode, 6)
+
+def direction_field_6(stop_value):
+    return slot_direction_field(stop_value, 6)
+
+def slot_direction_field(stop_value, slot):
     """A direction-of-travel filter, but only where it earns its place.
 
     Most stops serve a single direction -- 13,614 of 16,564 bus stops -- and
@@ -876,6 +948,8 @@ def direction_field(stop_value):
     The picker appears only at stops that genuinely run both ways.
     """
     stop = unwrap_stop(stop_value)
+    if not stop_configured(stop_value):
+        return []
     directions = fetch_destinations(stop)
     if len(directions) < 2:
         return []
@@ -895,8 +969,8 @@ def direction_field(stop_value):
 
     return [
         schema.Dropdown(
-            id = "direction",
-            name = "Direction",
+            id = "direction%d" % slot,
+            name = "Direction %d" % slot,
             desc = "Which way you are travelling.",
             icon = "signsPost",
             default = ALL_DIRECTIONS,
@@ -904,34 +978,130 @@ def direction_field(stop_value):
         ),
     ]
 
+MODE_OPTIONS = [
+    schema.Option(display = "Not used", value = "off"),
+    schema.Option(display = "Everything nearby", value = "all"),
+    schema.Option(display = "Bus", value = "b"),
+    schema.Option(display = "Light Rail", value = "l"),
+    schema.Option(display = "Ferry", value = "f"),
+]
+
 def get_schema():
+    """Six slots, each a mode, a stop and a direction.
+
+    They appear on screen in slot order, so the order things are configured is
+    the order they are read. Slots left as "Not used" are skipped entirely.
+    """
     return schema.Schema(
         version = "1",
         fields = [
-            # No separate Location field: LocationBased brings its own address
-            # picker, and having two was just two places to type an address.
             schema.Dropdown(
-                id = "mode",
-                name = "Mode",
-                desc = "Which kind of service to show.",
+                id = "mode1",
+                name = "Slot 1",
+                desc = "What to watch in slot 1.",
                 icon = "layerGroup",
                 default = "all",
-                options = [
-                    schema.Option(display = "Everything nearby", value = "all"),
-                    schema.Option(display = "Bus", value = "b"),
-                    schema.Option(display = "Light Rail", value = "l"),
-                    schema.Option(display = "Ferry", value = "f"),
-                ],
+                options = MODE_OPTIONS,
             ),
             schema.Generated(
-                id = "stop_picker",
-                source = "mode",
-                handler = stop_field,
+                id = "stop_picker1",
+                source = "mode1",
+                handler = stop_field_1,
             ),
             schema.Generated(
-                id = "direction_picker",
-                source = "stop",
-                handler = direction_field,
+                id = "direction_picker1",
+                source = "stop1",
+                handler = direction_field_1,
+            ),
+            schema.Dropdown(
+                id = "mode2",
+                name = "Slot 2",
+                desc = "What to watch in slot 2. Leave blank to skip.",
+                icon = "layerGroup",
+                default = "off",
+                options = MODE_OPTIONS,
+            ),
+            schema.Generated(
+                id = "stop_picker2",
+                source = "mode2",
+                handler = stop_field_2,
+            ),
+            schema.Generated(
+                id = "direction_picker2",
+                source = "stop2",
+                handler = direction_field_2,
+            ),
+            schema.Dropdown(
+                id = "mode3",
+                name = "Slot 3",
+                desc = "What to watch in slot 3. Leave blank to skip.",
+                icon = "layerGroup",
+                default = "off",
+                options = MODE_OPTIONS,
+            ),
+            schema.Generated(
+                id = "stop_picker3",
+                source = "mode3",
+                handler = stop_field_3,
+            ),
+            schema.Generated(
+                id = "direction_picker3",
+                source = "stop3",
+                handler = direction_field_3,
+            ),
+            schema.Dropdown(
+                id = "mode4",
+                name = "Slot 4",
+                desc = "What to watch in slot 4. Leave blank to skip.",
+                icon = "layerGroup",
+                default = "off",
+                options = MODE_OPTIONS,
+            ),
+            schema.Generated(
+                id = "stop_picker4",
+                source = "mode4",
+                handler = stop_field_4,
+            ),
+            schema.Generated(
+                id = "direction_picker4",
+                source = "stop4",
+                handler = direction_field_4,
+            ),
+            schema.Dropdown(
+                id = "mode5",
+                name = "Slot 5",
+                desc = "What to watch in slot 5. Leave blank to skip.",
+                icon = "layerGroup",
+                default = "off",
+                options = MODE_OPTIONS,
+            ),
+            schema.Generated(
+                id = "stop_picker5",
+                source = "mode5",
+                handler = stop_field_5,
+            ),
+            schema.Generated(
+                id = "direction_picker5",
+                source = "stop5",
+                handler = direction_field_5,
+            ),
+            schema.Dropdown(
+                id = "mode6",
+                name = "Slot 6",
+                desc = "What to watch in slot 6. Leave blank to skip.",
+                icon = "layerGroup",
+                default = "off",
+                options = MODE_OPTIONS,
+            ),
+            schema.Generated(
+                id = "stop_picker6",
+                source = "mode6",
+                handler = stop_field_6,
+            ),
+            schema.Generated(
+                id = "direction_picker6",
+                source = "stop6",
+                handler = direction_field_6,
             ),
         ],
     )

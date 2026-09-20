@@ -111,20 +111,30 @@ def destinations_for(lat, lon, code):
         return json.load(fh).get(code, [])
 
 
-def render_stop(stop_obj, direction=""):
-    """Render the real app for one stop and return the image bytes."""
+SLOT_KEYS = ("c", "n", "m", "r", "lat", "lon", "t")
+
+
+def render_slots(slots):
+    """Render the real app for a list of watched stops, in order."""
     if not os.path.exists(DEV_APP):
         raise RuntimeError(
             "Missing %s -- run: python3 pipeline/make_dev_copy.py" % DEV_APP)
 
+    args = []
+    for i, slot in enumerate(slots[:6], start=1):
+        stop = {k: slot["stop"][k] for k in SLOT_KEYS if k in slot["stop"]}
+        args.append("mode%d=%s" % (i, stop.get("m", "b")))
+        args.append("stop%d=%s" % (i, json.dumps(stop)))
+        if slot.get("direction"):
+            args.append("direction%d=%s" % (i, slot["direction"]))
+
     with tempfile.TemporaryDirectory() as tmp:
         out = os.path.join(tmp, "out.webp")
         proc = subprocess.run(
-            ["pixlet", "render", os.path.basename(DEV_APP),
-             "stop=" + json.dumps(stop_obj),
-             "direction=" + direction, "--magnify", "6", "-o", out],
+            ["pixlet", "render", os.path.basename(DEV_APP)] + args
+            + ["--magnify", "6", "-o", out],
             cwd=os.path.dirname(DEV_APP),
-            capture_output=True, text=True, timeout=60)
+            capture_output=True, text=True, timeout=120)
         if proc.returncode != 0 or not os.path.exists(out):
             raise RuntimeError((proc.stderr or proc.stdout or "render failed").strip())
         with open(out, "rb") as fh:
@@ -193,6 +203,17 @@ PAGE = """<!DOCTYPE html>
   .chip:hover { border-color: #46566a; color: var(--text); }
   .chip.on { background: var(--accent); border-color: var(--accent);
              color: #11151c; font-weight: 600; }
+  .slot { display: flex; align-items: center; gap: 10px; padding: 9px 15px;
+          border-bottom: 1px solid var(--line); }
+  .slot:last-child { border-bottom: none; }
+  .num { color: var(--dim); font-size: 12px; min-width: 14px;
+         font-variant-numeric: tabular-nums; }
+  .slot select { background: #18202a; color: var(--text); font-size: 12px;
+                 border: 1px solid var(--line); border-radius: 6px;
+                 padding: 3px 6px; max-width: 190px; }
+  .x { color: var(--dim); cursor: pointer; padding: 0 4px; font-size: 16px; }
+  .x:hover { color: #ff8787; }
+  .full { color: var(--dim); font-size: 12px; padding: 9px 15px; }
   .live { display: flex; align-items: center; gap: 9px; padding: 11px 15px;
           border-top: 1px solid var(--line); color: var(--dim); font-size: 12px; }
   .live label { display: flex; align-items: center; gap: 6px; cursor: pointer;
@@ -212,8 +233,8 @@ PAGE = """<!DOCTYPE html>
   <div class="hint" id="hint">Addresses are looked up via OpenStreetMap. Everything else stays on this machine.</div>
 
   <div id="places"></div>
+  <div id="watch"></div>
   <div id="stops"></div>
-  <div id="dirs"></div>
   <div id="out"></div>
 </div>
 
@@ -234,7 +255,7 @@ let live = false, liveTimer = null;
 function setLive(on) {
   live = on;
   clearInterval(liveTimer);
-  if (on) liveTimer = setInterval(() => { if (current) draw(); }, 30000);
+  if (on) liveTimer = setInterval(() => { if (watching.length) draw(); }, 30000);
   // Reflect it now rather than waiting for the next redraw, or the toggle
   // looks like it did nothing for 30 seconds.
   const dot = document.querySelector('.dot');
@@ -307,60 +328,82 @@ function renderStops() {
     `<div class="chips">${tabs}</div>` +
     `<div class="coords">${lat.toFixed(5)}, ${lon.toFixed(5)}</div>` +
     shown.map((s) =>
-    `<div class="row" id="s${lastStops.indexOf(s)}" onclick="show(${lastStops.indexOf(s)})">
+    `<div class="row" id="s${lastStops.indexOf(s)}" onclick="addStop(${lastStops.indexOf(s)})">
        <span class="mi">${s.mi.toFixed(1)} mi</span>
        <span class="tag ${s.m}">${MODE_TAG[s.m] || s.m.toUpperCase()}</span>
        <span class="nm">${esc(s.n)}${s.t ? ' <span style="color:var(--accent)">to ' + esc(s.t) + '</span>' : ''}<small>${esc((s.r || []).join(', '))}</small></span>
      </div>`).join(''));
-  if (shown.length) show(lastStops.indexOf(shown[0]));
+  $('hint').textContent = 'Click stops to add them, in the order you want them shown.';
 }
 
-let current = null, direction = '';
+// The app has six numbered slots and shows them in order, so the preview
+// keeps an ordered list rather than a single selection.
+const MAX_SLOTS = 6;
+let watching = [];
 
-async function show(i) {
-  document.querySelectorAll('.row.on').forEach(e => e.classList.remove('on'));
-  const el = $('s' + i); if (el) el.classList.add('on');
-  current = lastStops[i];
-  direction = '';
-  await loadDirections(current);
-  await draw();
-}
+async function addStop(i) {
+  if (watching.length >= MAX_SLOTS) return;
+  const s = lastStops[i];
+  if (watching.some(w => w.stop.m === s.m && w.stop.c === s.c)) return;
 
-async function loadDirections(s) {
   const r = await fetch(`/api/dests?lat=${s.lat}&lon=${s.lon}&code=${encodeURIComponent(s.c)}`);
-  const dests = await r.json();
-  // The app hides this picker at one-directional stops, so mirror that.
-  if (dests.length < 2) { $('dirs').innerHTML = ''; return; }
-  $('dirs').innerHTML = card('Direction',
-    '<div class="chips">' +
-    `<span class="chip on" onclick="setDir('')">Both directions</span>` +
-    dests.map(d => `<span class="chip" onclick="setDir(${JSON.stringify(JSON.stringify(d.m)).replace(/"/g,'&quot;')})">To ${esc(d.l)}</span>`).join('') +
-    '</div>');
-}
-
-function setDir(d) {
-  direction = d;
-  document.querySelectorAll('.chip').forEach(c => c.classList.remove('on'));
-  event.target.classList.add('on');
+  const dirs = await r.json();
+  watching.push({stop: s, direction: '', dirs: dirs.length >= 2 ? dirs : []});
+  renderWatch();
   draw();
 }
 
+function removeSlot(i) {
+  watching.splice(i, 1);
+  renderWatch();
+  if (watching.length) draw(); else $('out').innerHTML = '';
+}
+
+function setSlotDir(i, value) {
+  watching[i].direction = value;
+  draw();
+}
+
+function renderWatch() {
+  if (!watching.length) { $('watch').innerHTML = ''; return; }
+  const rows = watching.map((w, i) => {
+    const opts = w.dirs.length
+      ? `<select onchange="setSlotDir(${i}, this.value)">
+           <option value="">Both directions</option>` +
+        w.dirs.map(d => `<option value='${esc(JSON.stringify(d.m))}'
+             ${w.direction === JSON.stringify(d.m) ? 'selected' : ''}>To ${esc(d.l)}</option>`).join('') +
+        `</select>`
+      : '';
+    return `<div class="slot">
+        <span class="num">${i + 1}</span>
+        <span class="tag ${w.stop.m}">${MODE_TAG[w.stop.m]}</span>
+        <span class="nm">${esc(w.stop.n)}</span>
+        ${opts}
+        <span class="x" onclick="removeSlot(${i})" title="remove">&times;</span>
+      </div>`;
+  }).join('');
+  const note = watching.length >= MAX_SLOTS
+    ? '<div class="full">All six slots used — remove one to add another.</div>' : '';
+  $('watch').innerHTML = card('Watching (in order)', rows + note);
+}
+
 async function draw() {
-  const s = current;
+  if (!watching.length) return;
   $('out').innerHTML = card('Tidbyt preview', '<div class="empty">Rendering…</div>');
+  const payload = watching.map(w => ({stop: w.stop, direction: w.direction}));
   try {
-    const r = await fetch('/api/render?stop=' + encodeURIComponent(JSON.stringify(s)) +
-                          '&direction=' + encodeURIComponent(direction));
+    const r = await fetch('/api/render?slots=' + encodeURIComponent(JSON.stringify(payload)));
     if (!r.ok) throw new Error(await r.text());
     const blob = await r.blob();
     const url = URL.createObjectURL(blob);
+    const pages = Math.ceil(watching.length / 4);
     $('out').innerHTML = card('Tidbyt preview',
       `<div class="preview"><img src="${url}" alt="preview"></div>` +
       `<div class="live">
          <span class="dot ${live ? 'on' : ''}"></span>
          <label><input type="checkbox" ${live ? 'checked' : ''}
                 onchange="setLive(this.checked)"> Auto-refresh every 30s</label>
-         <span style="margin-left:auto">updated ${new Date().toLocaleTimeString()}</span>
+         <span style="margin-left:auto">${pages} page${pages > 1 ? 's, 4s each' : ''} · updated ${new Date().toLocaleTimeString()}</span>
        </div>`);
   } catch (e) {
     $('out').innerHTML = card('Tidbyt preview', `<div class="err">${esc(e.message)}</div>`);
@@ -430,14 +473,11 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(json.dumps(destinations_for(lat, lon, code)))
 
         if parts.path == "/api/render":
-            raw = (q.get("stop") or [""])[0]
-            direction = (q.get("direction") or [""])[0]
             try:
-                stop = json.loads(raw)
-                # lat/lon come along so the app can locate its data cell.
-                stop = {k: stop[k] for k in ("c", "n", "m", "r", "lat", "lon")
-                        if k in stop}
-                return self._send(render_stop(stop, direction), "image/webp")
+                slots = json.loads((q.get("slots") or ["[]"])[0])
+                if not slots:
+                    return self._send("nothing selected", "text/plain", status=400)
+                return self._send(render_slots(slots), "image/webp")
             except Exception as exc:
                 return self._send(str(exc), "text/plain", status=500)
 

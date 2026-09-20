@@ -1,17 +1,19 @@
 # NJ Transit Nearby — a Tidbyt app
 
-Pick a spot on the map in the Tidbyt app and see the next departures from the
-closest NJ Transit **bus stop** or **light rail station**.
+Watch up to six stops — bus, light rail and ferry, in any mix — and see the
+next departure from each, in the order you chose them.
 
 ```
-▌HBLR 2nd St
-West Side Av   7m
-Tonnelle Ave  16m
-West Side Av  27m
+▌  Midtown / W   15m      ← ferry, NY Waterway blue
+HBLR Tonnelle     16m      ← light rail, official line colour
+156  Paramus       9m      ← bus, realtime
+159  Fairview      8m
 ```
 
-Bus times are realtime (GPS-based). Light rail times come from the published
-timetable, because NJ Transit does not publish a realtime light rail feed.
+Four fit on screen. Beyond that it pages, four seconds per page.
+
+Bus times are realtime (GPS-based). Light rail and ferry come from published
+timetables, because neither publishes a realtime feed this app can consume.
 
 ---
 
@@ -34,6 +36,26 @@ Stops are bucketed into 0.1° grid cells (`data/v1/cells/40_-74.json`). Finding
 nearby stops means fetching the cell you are standing in plus the three
 adjacent to the nearest corner — a few KB, not an index of every stop in
 New Jersey.
+
+### Six slots, shown in order
+
+Configuration is six numbered slots. Each is a mode, a stop and a direction;
+slots left as "Not used" are skipped. Slot order is display order.
+
+Six is a fixed number because a Tidbyt schema is a **static form** — there is
+no "add another" control, so the count has to be decided up front.
+
+Each slot contributes one row: route badge, where the next one goes, minutes
+away. The stop name is deliberately absent — four rows of "Blvd East at 47th
+St" would fill the screen with names already known. What changes, and what is
+worth a glance, is the destination and the countdown.
+
+Paging uses `render.Animation`, where **every child is exactly one frame**. A
+page that stays up for four seconds therefore means repeating the same widget
+`PAGE_HOLD_MS / DELAY_MS` times. Pixlet coalesces the identical frames into one
+frame with a 4000 ms duration, so the output stays small — a six-slot render is
+under 1 KB. `show_full_animation` asks the device to play the whole cycle
+rather than cutting it off mid-rotation.
 
 ### Mode first, then the stop
 
@@ -59,8 +81,12 @@ drags in landings across the Hudson to fill a slot.
 Mechanically the picker is a `schema.Generated` field sourced from `mode` that
 returns a `schema.LocationBased` with a mode-specific handler. A LocationBased
 handler is only ever handed the location, so it cannot read the chosen mode —
-one small handler per mode is how the filter gets through. Every variant uses
-the same field id, so `config.get("stop")` works regardless.
+one small handler per mode is how the filter gets through.
+
+Pixlet resolves a handler by its **function name**, so handlers must be
+top-level and cannot be closures over a slot number. Hence the twelve thin
+`stop_field_N` / `direction_field_N` wrappers: they exist only to carry the
+slot number into the shared implementation.
 
 There is no separate `schema.Location` field: `LocationBased` brings its own
 address picker, and having both meant two places to type an address.
