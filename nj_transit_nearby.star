@@ -109,6 +109,11 @@ FONT = "tom-thumb"
 
 MODE_NAMES = {"b": "Bus", "l": "Light Rail", "f": "Ferry"}
 
+# Leading badges for the stop picker. Every entry gets one, including buses:
+# tagging only the exceptions means the common case carries no marker at all,
+# and a list where most rows look identical is a list nobody can scan.
+MODE_TAGS = {"b": "BUS", "l": "RAIL", "f": "FERRY"}
+
 # A floor, not a quota: at least this many light rail stations and ferry
 # terminals always make the picker, however far down a distance ranking they
 # fall, because bus stops are dense enough to bury a whole mode. Anything
@@ -939,11 +944,7 @@ def stop_options(location, mode = ""):
         miles = "%d.%d" % (tenths // 10, tenths % 10)
 
         stop_mode = stop.get("m", "b")
-        label = stop["n"]
-        if stop_mode != "b":
-            # A boat and a bus stop can share a neighbourhood and a name; say
-            # which this is.
-            label += " (%s)" % MODE_NAMES.get(stop_mode, "Bus")
+        label = "%s  %s" % (MODE_TAGS.get(stop_mode, "BUS"), stop["n"])
 
         # Most stops sit on one side of a street and serve one direction, so a
         # street corner appears twice under the same name. Saying where each
