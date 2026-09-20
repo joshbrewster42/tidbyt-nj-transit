@@ -97,6 +97,13 @@ FONT = "tom-thumb"
 
 MODE_NAMES = {"b": "Bus", "l": "Light Rail", "f": "Ferry"}
 
+# A floor, not a quota: at least this many light rail stations and ferry
+# terminals always make the picker, however far down a distance ranking they
+# fall, because bus stops are dense enough to bury a whole mode. Anything
+# genuinely close still appears on its own merit. Keeping this at one avoids
+# dragging in a second terminal across the river just to fill a slot.
+MODE_GUARANTEE = 1
+
 DEFAULT_STOP = json.encode({
     "c": "20783",
     "n": "Hoboken Ave at Summit Ave",
@@ -154,7 +161,42 @@ def nearby_stops(lat, lon, limit = 24):
         scored.append((haversine_km(lat, lon, s["lat"], s["lon"]), s))
     scored = sorted(scored, key = lambda pair: pair[0])
 
-    return [(d, s) for (d, s) in scored[:limit]]
+    return guarantee_modes(scored, limit)
+
+def guarantee_modes(scored, limit):
+    """Nearest stops, but never with a whole mode crowded out.
+
+    Bus stops are dense: from a spot a few blocks inland of Weehawken there are
+    two dozen within 0.4 miles, which is enough to push the ferry terminal half
+    a mile away off a distance-ranked list entirely. Somebody who wants the
+    ferry then cannot find it at all.
+
+    So take the nearest stops as usual, then make sure the closest few light
+    rail stations and ferry terminals are in there regardless of where they
+    placed, and re-sort so the list still reads by distance.
+    """
+    chosen = scored[:limit]
+
+    seen = {}
+    for (_d, s) in chosen:
+        seen[s["m"] + s["c"]] = True
+
+    for mode in ["l", "f"]:
+        present = 0
+        for (_d, s) in chosen:
+            if s["m"] == mode:
+                present += 1
+
+        for (dist, s) in scored:
+            if present >= MODE_GUARANTEE:
+                break
+            if s["m"] != mode or seen.get(s["m"] + s["c"]):
+                continue
+            chosen.append((dist, s))
+            seen[s["m"] + s["c"]] = True
+            present += 1
+
+    return sorted(chosen, key = lambda pair: pair[0])
 
 # ---------------------------------------------------------------------------
 # Realtime bus departures

@@ -37,6 +37,10 @@ DEV_APP = os.path.join(ROOT, ".dev", "nj_transit_dev.star")
 
 PORT = 8090
 CELL_SIZE = 0.1
+# Mirrors MODE_GUARANTEE in the app: a floor, not a quota. The nearest light
+# rail station and ferry terminal always appear; anything else close enough
+# earns its place on distance.
+MODE_GUARANTEE = 1
 USER_AGENT = "tidbyt-nj-transit-dev/1.0 (local development helper)"
 
 
@@ -69,7 +73,22 @@ def nearby(lat, lon, limit=25):
         item["mi"] = round(d * 0.621371, 2)
         scored.append(item)
     scored.sort(key=lambda s: s["mi"])
-    return scored[:limit]
+    chosen = scored[:limit]
+
+    seen = {s["m"] + s["c"] for s in chosen}
+    for mode in ("l", "f"):
+        present = sum(1 for s in chosen if s["m"] == mode)
+        for s in scored:
+            if present >= MODE_GUARANTEE:
+                break
+            if s["m"] != mode or (s["m"] + s["c"]) in seen:
+                continue
+            chosen.append(s)
+            seen.add(s["m"] + s["c"])
+            present += 1
+
+    chosen.sort(key=lambda s: s["mi"])
+    return chosen
 
 
 def destinations_for(lat, lon, code):
