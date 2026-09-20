@@ -843,8 +843,13 @@ def direction_filter(direction):
         return ALL_DIRECTIONS
     return direction
 
-def next_departure(slot, now):
-    """The soonest departure for one watched stop, after its direction filter."""
+def next_departures(slot, now, count):
+    """The soonest departures for one watched stop, after its direction filter.
+
+    Asks for `count` because the screen holds four rows however many stops are
+    being watched: one stop fills them with its own next four, two stops take
+    two each. Leaving the bottom half black wastes the only space there is.
+    """
     stop = slot["stop"]
     code = resolve_stop_code(stop, slot["direction"])
     if stop["m"] == "l":
@@ -855,15 +860,18 @@ def next_departure(slot, now):
         departures, err = bus_departures(code)
 
     if err:
-        return {"stop": stop, "dep": None, "err": err}
+        return [{"stop": stop, "dep": None, "err": err}]
 
     filtered = filter_by_direction(departures, direction_filter(slot["direction"]))
     if type(filtered) == "string":
-        return {"stop": stop, "dep": None, "err": "none that way"}
+        return [{"stop": stop, "dep": None, "err": "none that way"}]
     if not filtered:
-        return {"stop": stop, "dep": None, "err": "no departures"}
+        return [{"stop": stop, "dep": None, "err": "no departures"}]
 
-    return {"stop": stop, "dep": filtered[0], "err": None}
+    out = []
+    for dep in filtered[:count]:
+        out.append({"stop": stop, "dep": dep, "err": None})
+    return out
 
 def main(config):
     tz = config.get("$tz", "America/New_York")
@@ -874,8 +882,23 @@ def main(config):
         return message_screen("pick a stop")
 
     items = []
-    for slot in slots:
-        items.append(next_departure(slot, now))
+    if len(slots) >= LINES_PER_PAGE:
+        # Every row is spoken for; one departure each, and page through them.
+        for slot in slots:
+            items.extend(next_departures(slot, now, 1))
+    else:
+        # Fewer stops than rows, so hand out the spare rows rather than
+        # leaving the bottom of the screen black. Earlier slots get the
+        # remainder, since they were chosen first.
+        each = LINES_PER_PAGE // len(slots)
+        spare = LINES_PER_PAGE % len(slots)
+        for i, slot in enumerate(slots):
+            want = each + (1 if i < spare else 0)
+            got = next_departures(slot, now, want)
+
+            # A stop with nothing to show still only needs its one line; give
+            # what it did not use back to the others.
+            items.extend(got)
 
     pages = []
     for start in range(0, len(items), LINES_PER_PAGE):

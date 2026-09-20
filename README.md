@@ -45,10 +45,25 @@ slots left as "Not used" are skipped. Slot order is display order.
 Six is a fixed number because a Tidbyt schema is a **static form** — there is
 no "add another" control, so the count has to be decided up front.
 
-Each slot contributes one row: route badge, where the next one goes, minutes
-away. The stop name is deliberately absent — four rows of "Blvd East at 47th
-St" would fill the screen with names already known. What changes, and what is
-worth a glance, is the destination and the countdown.
+Each row is a departure: route badge, where it goes, minutes away. The stop
+name is deliberately absent — four rows of "Blvd East at 47th St" would fill
+the screen with names already known. What changes, and what is worth a glance,
+is the destination and the countdown.
+
+**The four rows are shared out between the slots.** Watch four or more stops
+and each gets one row, paging through the rest. Watch fewer and the spare rows
+go to extra departures rather than being left black:
+
+| Slots | Rows each |
+|---|---|
+| 1 | next 4 from that stop |
+| 2 | next 2 each |
+| 3 | 2, then 1, 1 |
+| 4+ | 1 each, paging |
+
+Scaling the *font* instead was the obvious alternative and does not work: at
+`6x13` the destination column is about three characters wide once the badge and
+countdown have taken their share. The screen is short on width, not height.
 
 Paging uses `render.Animation`, where **every child is exactly one frame**. A
 page that stays up for four seconds therefore means repeating the same widget
