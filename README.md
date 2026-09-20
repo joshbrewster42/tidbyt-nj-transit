@@ -57,6 +57,34 @@ frame with a 4000 ms duration, so the output stays small — a six-slot render i
 under 1 KB. `show_full_animation` asks the device to play the whole cycle
 rather than cutting it off mid-rotation.
 
+### One entry per place, not per kerb
+
+A bus stop is a signpost on one side of the street, so a junction appears in
+the feed twice — same name, different stop codes, one per direction. A light
+rail platform and a ferry dock are single places where vehicles leave both
+ways, so they were already one entry with a direction dropdown.
+
+Buses now get the same shape. Same-name stops within 250 m collapse into one
+entry whose direction dropdown names each kerb:
+
+```
+Blvd East at 47/48th St to North Bergen / New York - 23, 128, 165, 166 (0.2 mi)
+    To New York     -> {"c":"21822"}
+    To North Bergen -> {"c":"21818"}
+```
+
+Near Port Imperial this took 25 list entries covering 18 distinct places down
+to 25 entries covering 25 places, with zero duplicates.
+
+The stop codes matter, which is why the group carries them: the realtime API is
+queried **per stop code**, so for a grouped bus stop the direction picker is
+choosing which code to ask, not filtering what comes back. For light rail and
+ferry there is one code and the direction filters departures instead.
+`resolve_stop_code` and `direction_filter` sort out which is which.
+
+Two entries sharing a name *and* a heading are the feed listing one place
+twice; the nearer one wins.
+
 ### Mode first, then the stop
 
 Configuration is a **Mode** dropdown followed by a stop picker that regenerates

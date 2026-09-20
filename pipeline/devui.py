@@ -53,6 +53,36 @@ def haversine_km(lat1, lon1, lat2, lon2):
     return 2 * r * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 
+GROUP_RADIUS_KM = 0.25
+
+
+def group_bus_stops(stops):
+    """Mirror the app: collapse the two kerbs of a junction into one entry."""
+    out, groups = [], {}
+    for s in stops:
+        if s["m"] != "b":
+            out.append(s)
+            continue
+        found = groups.get(s["n"])
+        if found and haversine_km(found["lat"], found["lon"],
+                                  s["lat"], s["lon"]) <= GROUP_RADIUS_KM:
+            heading = s.get("t", "")
+            if any(m[1] == heading for m in found["g"]):
+                continue  # the feed listing one place twice
+            found["g"].append([s["c"], heading])
+            for route in s.get("r", []):
+                if route not in found["r"]:
+                    found["r"].append(route)
+            found["t"] = " / ".join(m[1] for m in found["g"] if m[1])
+            continue
+        group = dict(s)
+        group["r"] = list(s.get("r", []))
+        group["g"] = [[s["c"], s.get("t", "")]]
+        groups[s["n"]] = group
+        out.append(group)
+    return out
+
+
 def nearby(lat, lon, mode="", limit=25):
     """Mirror the app's own cell lookup so results match the real picker.
 
@@ -79,6 +109,7 @@ def nearby(lat, lon, mode="", limit=25):
         item["mi"] = round(d * 0.621371, 2)
         scored.append(item)
     scored.sort(key=lambda s: s["mi"])
+    scored = group_bus_stops(scored)
 
     if mode:
         # One mode is already its own group; nothing can be crowded out.
@@ -346,9 +377,17 @@ async function addStop(i) {
   const s = lastStops[i];
   if (watching.some(w => w.stop.m === s.m && w.stop.c === s.c)) return;
 
-  const r = await fetch(`/api/dests?lat=${s.lat}&lon=${s.lon}&code=${encodeURIComponent(s.c)}`);
-  const dirs = await r.json();
-  watching.push({stop: s, direction: '', dirs: dirs.length >= 2 ? dirs : []});
+  let dirs = [];
+  if ((s.g || []).length > 1) {
+    // A grouped bus stop: the choice is which kerb, so each option names a
+    // stop code rather than a set of terminals to filter on.
+    dirs = s.g.map(m => ({l: m[1] || 'This stop', v: JSON.stringify({c: m[0]})}));
+  } else {
+    const r = await fetch(`/api/dests?lat=${s.lat}&lon=${s.lon}&code=${encodeURIComponent(s.c)}`);
+    const d = await r.json();
+    if (d.length >= 2) dirs = d.map(x => ({l: x.l, v: JSON.stringify(x.m)}));
+  }
+  watching.push({stop: s, direction: dirs.length ? dirs[0].v : '', dirs: dirs});
   renderWatch();
   draw();
 }
@@ -367,11 +406,12 @@ function setSlotDir(i, value) {
 function renderWatch() {
   if (!watching.length) { $('watch').innerHTML = ''; return; }
   const rows = watching.map((w, i) => {
+    const grouped = (w.stop.g || []).length > 1;
     const opts = w.dirs.length
-      ? `<select onchange="setSlotDir(${i}, this.value)">
-           <option value="">Both directions</option>` +
-        w.dirs.map(d => `<option value='${esc(JSON.stringify(d.m))}'
-             ${w.direction === JSON.stringify(d.m) ? 'selected' : ''}>To ${esc(d.l)}</option>`).join('') +
+      ? `<select onchange="setSlotDir(${i}, this.value)">` +
+        (grouped ? '' : '<option value="">Both directions</option>') +
+        w.dirs.map(d => `<option value='${esc(d.v)}'
+             ${w.direction === d.v ? 'selected' : ''}>To ${esc(d.l)}</option>`).join('') +
         `</select>`
       : '';
     return `<div class="slot">

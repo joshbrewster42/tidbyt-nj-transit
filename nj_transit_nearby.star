@@ -176,11 +176,78 @@ def nearby_stops(lat, lon, mode = "", limit = 24):
             continue
         scored.append((haversine_km(lat, lon, s["lat"], s["lon"]), s))
     scored = sorted(scored, key = lambda pair: pair[0])
+    scored = group_bus_stops(scored)
 
     if mode:
         # One mode is already its own group; nothing can be crowded out.
         return scored[:limit]
     return guarantee_modes(scored, limit)
+
+# Two bus stops on opposite kerbs of one junction share a name and sit within
+# a block of each other. Anything further apart that happens to share a name is
+# a different junction.
+GROUP_RADIUS_KM = 0.25
+
+def group_bus_stops(scored):
+    """Collapse the two sides of a street into one pickable place.
+
+    A bus stop is a signpost on one kerb, so a junction appears twice with the
+    same name and different stop codes -- which is true, and useless in a list.
+    A light rail platform and a ferry dock are single places where vehicles
+    leave both ways, so they already appear once with a direction dropdown.
+    This gives bus stops the same shape: one entry, direction chosen after.
+
+    The codes matter: the realtime API is queried per stop code, so the group
+    carries all of them and the direction picker chooses which one to ask.
+    """
+    out = []
+    groups = {}
+    for (dist, s) in scored:
+        if s["m"] != "b":
+            out.append((dist, s))
+            continue
+
+        key = s["n"]
+        found = groups.get(key)
+        if found != None and haversine_km(
+            found[1]["lat"],
+            found[1]["lon"],
+            s["lat"],
+            s["lon"],
+        ) <= GROUP_RADIUS_KM:
+            group = found[1]
+
+            # Two entries with the same name AND the same heading are the feed
+            # listing one place twice; keep the nearer and move on.
+            heading = s.get("t", "")
+            for member in group["g"]:
+                if member[1] == heading:
+                    heading = None
+                    break
+            if heading == None:
+                continue
+
+            group["g"].append([s["c"], s.get("t", "")])
+            for route in s.get("r", []):
+                if route not in group["r"]:
+                    group["r"].append(route)
+            group["t"] = " / ".join([m[1] for m in group["g"] if m[1]])
+            continue
+
+        group = {
+            "m": "b",
+            "c": s["c"],
+            "n": s["n"],
+            "lat": s["lat"],
+            "lon": s["lon"],
+            "r": list(s.get("r", [])),
+            "t": s.get("t", ""),
+            "g": [[s["c"], s.get("t", "")]],
+        }
+        groups[key] = (dist, group)
+        out.append((dist, group))
+
+    return out
 
 def guarantee_modes(scored, limit):
     """Nearest stops, but never with a whole mode crowded out.
@@ -742,20 +809,42 @@ def configured_slots(config):
         })
     return out
 
+def resolve_stop_code(stop, direction):
+    """Which stop code to actually query.
+
+    A grouped bus stop holds one code per kerb, and the direction picker says
+    which. Anything else has a single code and the direction only filters.
+    """
+    if direction:
+        chosen = json.decode(direction)
+        if type(chosen) == "dict" and "c" in chosen:
+            return chosen["c"]
+    return stop["c"]
+
+def direction_filter(direction):
+    """The terminal list to filter on, or nothing when the code already picked."""
+    if not direction:
+        return ALL_DIRECTIONS
+    chosen = json.decode(direction)
+    if type(chosen) == "dict":
+        return ALL_DIRECTIONS
+    return direction
+
 def next_departure(slot, now):
     """The soonest departure for one watched stop, after its direction filter."""
     stop = slot["stop"]
+    code = resolve_stop_code(stop, slot["direction"])
     if stop["m"] == "l":
-        departures, err = scheduled_departures("lr", stop["c"], now)
+        departures, err = scheduled_departures("lr", code, now)
     elif stop["m"] == "f":
-        departures, err = scheduled_departures("fr", stop["c"], now)
+        departures, err = scheduled_departures("fr", code, now)
     else:
-        departures, err = bus_departures(stop["c"])
+        departures, err = bus_departures(code)
 
     if err:
         return {"stop": stop, "dep": None, "err": err}
 
-    filtered = filter_by_direction(departures, slot["direction"])
+    filtered = filter_by_direction(departures, direction_filter(slot["direction"]))
     if type(filtered) == "string":
         return {"stop": stop, "dep": None, "err": "none that way"}
     if not filtered:
@@ -941,15 +1030,41 @@ def direction_field_6(stop_value):
     return slot_direction_field(stop_value, 6)
 
 def slot_direction_field(stop_value, slot):
-    """A direction-of-travel filter, but only where it earns its place.
+    """A direction picker for one slot.
 
-    Most stops serve a single direction -- 13,614 of 16,564 bus stops -- and
-    there the stop itself already answers "which way", so no filter is shown.
-    The picker appears only at stops that genuinely run both ways.
+    For a grouped bus stop the choice is which kerb to stand on, so the option
+    carries the stop code to query. For a light rail platform or ferry dock
+    there is one place and several destinations, so it filters departures
+    instead. Both arrive back as the same shape.
     """
-    stop = unwrap_stop(stop_value)
     if not stop_configured(stop_value):
         return []
+
+    stop = unwrap_stop(stop_value)
+    members = stop.get("g", [])
+
+    if len(members) > 1:
+        # A grouped bus stop: each member is one direction of travel already,
+        # so picking one needs no further filtering.
+        options = []
+        for member in members:
+            options.append(
+                schema.Option(
+                    display = "To %s" % member[1] if member[1] else "This stop",
+                    value = json.encode({"c": member[0]}),
+                ),
+            )
+        return [
+            schema.Dropdown(
+                id = "direction%d" % slot,
+                name = "Direction %d" % slot,
+                desc = "Which way you are travelling.",
+                icon = "signsPost",
+                default = options[0].value,
+                options = options,
+            ),
+        ]
+
     directions = fetch_destinations(stop)
     if len(directions) < 2:
         return []
