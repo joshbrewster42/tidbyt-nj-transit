@@ -102,6 +102,81 @@ twice; the nearer one wins.
 
 ### One address, six dropdowns
 
+Configuration is a single `schema.Location` and one `schema.Generated` sourced
+from it, returning all six stop dropdowns at once.
+
+Three pixlet rules forced this shape, each found by the config UI failing
+rather than by anything at load time:
+
+- **A generated field cannot carry a handler.** So the slots are dropdowns,
+  not `LocationBased` fields — a `LocationBased` returned from a generator is
+  never registered, and asking for its options answers `no exported handler
+  named 'stop1$stops_all'`.
+- **Several generated fields cannot share one `source`.** Six generators all
+  sourced from `home` collapse into one: whichever reply lands last is the only
+  slot that appears. A handler may return *several* fields, so one generator
+  returns all six dropdowns.
+- **A generated field's `source` must be statically declared.** Direction
+  therefore cannot be a second field hanging off a generated stop dropdown —
+  that answers `schema.Generated references source that does not exist: stop1`.
+
+- **A dropdown option's value cannot be empty**, and a dropdown must carry a
+  default, hence the `SLOT_UNUSED` sentinel and guarding every `json.decode` of
+  it, since a sentinel is not JSON.
+
+### Direction lives inside the option
+
+Because direction cannot be its own field, each option is self-contained: one
+entry per stop *per direction of travel*.
+
+```
+BUS · 60th St at Hudson Ave to New York - 89, 159, 188 (0.2 mi)
+BUS · 60th St at Hudson Ave to North Bergen - 89, 159, 188 (0.2 mi)
+FERRY · Port Imperial / Weehawken to Midtown / W. 39th St. (0.8 mi)
+FERRY · Port Imperial / Weehawken to Edgewater (0.8 mi)
+```
+
+The value carries what the render needs and nothing else — which stop code to
+query, its mode, and the terminals that count as this direction:
+
+```json
+{"c":"21914","d":["Hoboken Term","Journal Sq"],"m":"b"}
+```
+
+The cost is a longer list, since a stop served both ways appears twice. The
+benefit is that every row says exactly where that vehicle goes, and choosing
+one is a single decision rather than two.
+
+### One entry per place, not per kerb
+
+A bus stop is a signpost on one side of the street, so a junction appears in
+the feed twice — same name, different stop codes, one per direction. A light
+rail platform and a ferry dock are single places where vehicles leave both
+ways, so they were already one entry with a direction dropdown.
+
+Buses now get the same shape. Same-name stops within 250 m collapse into one
+entry whose direction dropdown names each kerb:
+
+```
+Blvd East at 47/48th St to North Bergen / New York - 23, 128, 165, 166 (0.2 mi)
+    To New York     -> {"c":"21822"}
+    To North Bergen -> {"c":"21818"}
+```
+
+Near Port Imperial this took 25 list entries covering 18 distinct places down
+to 25 entries covering 25 places, with zero duplicates.
+
+The stop codes matter, which is why the group carries them: the realtime API is
+queried **per stop code**, so for a grouped bus stop the direction picker is
+choosing which code to ask, not filtering what comes back. For light rail and
+ferry there is one code and the direction filters departures instead.
+`resolve_stop_code` and `direction_filter` sort out which is which.
+
+Two entries sharing a name *and* a heading are the feed listing one place
+twice; the nearer one wins.
+
+### One address, six dropdowns
+
 Configuration is a single `schema.Location` followed by six stop slots. Each
 slot is a `schema.Generated` sourced from that address, returning a dropdown of
 nearby stops, nearest first. A seventh generated field per slot supplies the

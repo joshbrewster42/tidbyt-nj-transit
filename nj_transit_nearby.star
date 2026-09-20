@@ -187,78 +187,11 @@ def nearby_stops(lat, lon, mode = "", limit = 24):
             continue
         scored.append((haversine_km(lat, lon, s["lat"], s["lon"]), s))
     scored = sorted(scored, key = lambda pair: pair[0])
-    scored = group_bus_stops(scored)
 
     if mode:
         # One mode is already its own group; nothing can be crowded out.
         return scored[:limit]
     return guarantee_modes(scored, limit)
-
-# Two bus stops on opposite kerbs of one junction share a name and sit within
-# a block of each other. Anything further apart that happens to share a name is
-# a different junction.
-GROUP_RADIUS_KM = 0.25
-
-def group_bus_stops(scored):
-    """Collapse the two sides of a street into one pickable place.
-
-    A bus stop is a signpost on one kerb, so a junction appears twice with the
-    same name and different stop codes -- which is true, and useless in a list.
-    A light rail platform and a ferry dock are single places where vehicles
-    leave both ways, so they already appear once with a direction dropdown.
-    This gives bus stops the same shape: one entry, direction chosen after.
-
-    The codes matter: the realtime API is queried per stop code, so the group
-    carries all of them and the direction picker chooses which one to ask.
-    """
-    out = []
-    groups = {}
-    for (dist, s) in scored:
-        if s["m"] != "b":
-            out.append((dist, s))
-            continue
-
-        key = s["n"]
-        found = groups.get(key)
-        if found != None and haversine_km(
-            found[1]["lat"],
-            found[1]["lon"],
-            s["lat"],
-            s["lon"],
-        ) <= GROUP_RADIUS_KM:
-            group = found[1]
-
-            # Two entries with the same name AND the same heading are the feed
-            # listing one place twice; keep the nearer and move on.
-            heading = s.get("t", "")
-            for member in group["g"]:
-                if member[1] == heading:
-                    heading = None
-                    break
-            if heading == None:
-                continue
-
-            group["g"].append([s["c"], s.get("t", "")])
-            for route in s.get("r", []):
-                if route not in group["r"]:
-                    group["r"].append(route)
-            group["t"] = " / ".join([m[1] for m in group["g"] if m[1]])
-            continue
-
-        group = {
-            "m": "b",
-            "c": s["c"],
-            "n": s["n"],
-            "lat": s["lat"],
-            "lon": s["lon"],
-            "r": list(s.get("r", [])),
-            "t": s.get("t", ""),
-            "g": [[s["c"], s.get("t", "")]],
-        }
-        groups[key] = (dist, group)
-        out.append((dist, group))
-
-    return out
 
 def guarantee_modes(scored, limit):
     """Nearest stops, but never with a whole mode crowded out.
@@ -595,17 +528,13 @@ def matches_destination(dep_dest, wanted):
             return False
     return strong
 
-def filter_by_direction(departures, raw):
+def filter_by_direction(departures, terminals):
     """Keep only departures heading the chosen way.
 
-    A direction is a set of terminals, not one place, so a departure counts if
-    it matches any of them. Returns a message string instead of a list when the
-    filter leaves nothing, so the caller can explain the empty screen.
+    A direction is a set of terminals, not one place -- the 159 outbound
+    reaches Fort Lee, Cliffside Park and Fairview, and all three mean the same
+    way -- so a departure counts if it matches any of them.
     """
-    if not raw or raw == ALL_DIRECTIONS:
-        return departures
-
-    terminals = json.decode(raw)
     if type(terminals) != "list" or not terminals:
         return departures
 
@@ -822,40 +751,8 @@ def configured_slots(config):
         raw = config.get("stop%d" % slot)
         if not stop_configured(raw):
             continue
-        out.append({
-            "stop": unwrap_stop(raw),
-            "direction": config.get("direction%d" % slot, ALL_DIRECTIONS),
-        })
+        out.append({"stop": unwrap_stop(raw)})
     return out
-
-def resolve_stop_code(stop, direction):
-    """Which stop code to actually query.
-
-    A grouped bus stop holds one code per kerb, and the direction picker says
-    which. Anything else has a single code and the direction only filters.
-    """
-    if direction and direction != ALL_DIRECTIONS:
-        chosen = json.decode(direction)
-        if type(chosen) == "dict" and "c" in chosen:
-            return chosen["c"]
-    return stop["c"]
-
-def direction_filter(direction):
-    """The terminal list to filter departures against, if any.
-
-    A grouped bus stop's choice carries both the kerb's stop code and that
-    kerb's terminals. The code narrows what is queried; the terminals still
-    have to narrow what comes back, because a kerb can serve both directions.
-    """
-    if not direction or direction == ALL_DIRECTIONS:
-        return ALL_DIRECTIONS
-    chosen = json.decode(direction)
-    if type(chosen) == "dict":
-        terminals = chosen.get("m", [])
-        if terminals:
-            return json.encode(terminals)
-        return ALL_DIRECTIONS
-    return direction
 
 def next_departures(slot, now, count):
     """The soonest departures for one watched stop, after its direction filter.
@@ -865,18 +762,17 @@ def next_departures(slot, now, count):
     two each. Leaving the bottom half black wastes the only space there is.
     """
     stop = slot["stop"]
-    code = resolve_stop_code(stop, slot["direction"])
     if stop["m"] == "l":
-        departures, err = scheduled_departures("lr", code, now)
+        departures, err = scheduled_departures("lr", stop["c"], now)
     elif stop["m"] == "f":
-        departures, err = scheduled_departures("fr", code, now)
+        departures, err = scheduled_departures("fr", stop["c"], now)
     else:
-        departures, err = bus_departures(code)
+        departures, err = bus_departures(stop["c"])
 
     if err:
         return [{"stop": stop, "dep": None, "err": err}]
 
-    filtered = filter_by_direction(departures, direction_filter(slot["direction"]))
+    filtered = filter_by_direction(departures, stop.get("d", []))
     if type(filtered) == "string":
         return [{"stop": stop, "dep": None, "err": "none that way"}]
     if not filtered:
@@ -937,7 +833,13 @@ def main(config):
     )
 
 def stop_options(location, mode = ""):
-    """Nearest stops to the location the user picked in the mobile app.
+    """Nearby stops, one option per direction of travel.
+
+    Direction is baked into the option rather than offered as a second field.
+    A schema.Generated can only source from a *statically declared* field, and
+    these dropdowns are themselves generated -- pixlet rejects the schema with
+    "references source that does not exist: stop1". So each option has to be
+    self-contained: which stop to query, and which way it is going.
 
     This runs on Tidbyt's servers when someone configures the app, not on the
     device, so it can afford to download a grid cell and sort it.
@@ -948,179 +850,76 @@ def stop_options(location, mode = ""):
 
     options = []
     for (dist_km, stop) in nearby_stops(lat, lon, mode):
-        mode = stop.get("m", "b")
+        stop_mode = stop.get("m", "b")
 
         # Starlark's % operator has no precision specifier, so round by hand.
         tenths = int(dist_km * 0.621371 * 10 + 0.5)
         miles = "%d.%d" % (tenths // 10, tenths % 10)
 
-        stop_mode = stop.get("m", "b")
-        label = MODE_TAGS.get(stop_mode, "BUS") + MODE_SEPARATOR + stop["n"]
-
-        # Most stops sit on one side of a street and serve one direction, so a
-        # street corner appears twice under the same name. Saying where each
-        # one's vehicles are headed is the only way to tell them apart.
-        heading = stop.get("t", "")
-        if heading:
-            label += " to %s" % heading
-
-        # A ferry route is named for where it goes, so listing routes after the
-        # heading would just repeat it. Bus and light rail route numbers do add
-        # something.
         routes = ", ".join(stop.get("r", [])[:4])
-        if routes and stop_mode != "f":
-            label += " - %s" % routes
+        suffix = " - %s" % routes if routes and stop_mode != "f" else ""
 
-        options.append(
-            schema.Option(
-                display = "%s (%s mi)" % (label, miles),
-                value = json.encode(stop),
-            ),
-        )
+        for entry in stop_directions(stop):
+            label = MODE_TAGS.get(stop_mode, "BUS") + MODE_SEPARATOR + stop["n"]
+            if entry["l"]:
+                label += " to %s" % entry["l"]
+
+            options.append(
+                schema.Option(
+                    display = "%s%s (%s mi)" % (label, suffix, miles),
+                    value = json.encode({
+                        "c": stop["c"],
+                        "m": stop_mode,
+                        "d": entry["m"],
+                    }),
+                ),
+            )
 
     if not options:
         options.append(
             schema.Option(
                 display = "Nothing found nearby",
-                value = DEFAULT_STOP,
+                value = SLOT_UNUSED,
             ),
         )
     return options
 
-# The address is entered once, into a single schema.Location, and each slot is
-# a dropdown generated from it. Six LocationBased fields would each carry their
-# own address picker, which meant typing the same address six times.
-#
-# A generated field can safely return a Dropdown: dropdowns have no handler of
-# their own, so nothing needs to be in pixlet's handler table. That is exactly
-# what a LocationBased cannot do here.
+def stop_directions(stop):
+    """Every way a rider can leave this stop, as {l: label, m: terminals}.
 
-def slot_stop_field(location, slot):
-    """A dropdown of nearby stops for one slot."""
+    Falls back to a single unlabelled entry when a stop has no direction data,
+    so it still appears rather than vanishing.
+    """
+    entries = fetch_destinations(stop)
+    if not entries:
+        return [{"l": stop.get("t", ""), "m": []}]
+    return entries
+
+def stop_fields(location):
+    """Every slot's dropdown, built from the one address.
+
+    All six come from a single generated field on purpose. Pixlet's config UI
+    keys a generated field by its `source`, so six of them sourced from the
+    same address collapse into one -- whichever reply arrives last is the only
+    slot that appears. A handler may return several fields, which sidesteps
+    that entirely and computes the nearby list once instead of six times.
+    """
     options = [schema.Option(display = "Not used", value = SLOT_UNUSED)]
     options.extend(stop_options(location))
 
-    return [
-        schema.Dropdown(
-            id = "stop%d" % slot,
-            name = "Stop %d" % slot,
-            desc = "Nearest first. Leave as Not used to skip.",
-            icon = "route",
-            default = SLOT_UNUSED,
-            options = options,
-        ),
-    ]
-
-def stops1(location):
-    return slot_stop_field(location, 1)
-
-def stops2(location):
-    return slot_stop_field(location, 2)
-
-def stops3(location):
-    return slot_stop_field(location, 3)
-
-def stops4(location):
-    return slot_stop_field(location, 4)
-
-def stops5(location):
-    return slot_stop_field(location, 5)
-
-def stops6(location):
-    return slot_stop_field(location, 6)
-
-def slot_direction_field(stop_value, slot):
-    """A direction picker for one slot.
-
-    For a grouped bus stop the choice is which kerb to stand on, so the option
-    carries the stop code to query. For a light rail platform or ferry dock
-    there is one place and several destinations, so it filters departures
-    instead. Both arrive back as the same shape.
-    """
-    if not stop_configured(stop_value):
-        return []
-
-    stop = unwrap_stop(stop_value)
-    members = stop.get("g", [])
-
-    if len(members) > 1:
-        # A grouped bus stop: the choice names which kerb to query. Most kerbs
-        # serve one direction, but 17% of bus stops serve both, so carry that
-        # kerb's terminals too and keep filtering -- otherwise picking "To New
-        # York" at such a stop shows whatever leaves, in either direction.
-        options = []
-        for member in members:
-            code = member[0]
-            heading = member[1]
-            terminals = []
-            for entry in fetch_destinations(stop, code):
-                if not terminals or entry["l"] == heading:
-                    terminals = entry["m"]
-            options.append(
-                schema.Option(
-                    display = "To %s" % heading if heading else "This stop",
-                    value = json.encode({"c": code, "m": terminals}),
-                ),
-            )
-        return [
+    fields = []
+    for slot in range(1, SLOTS + 1):
+        fields.append(
             schema.Dropdown(
-                id = "direction%d" % slot,
-                name = "Direction %d" % slot,
-                desc = "Which way you are travelling.",
-                icon = "signsPost",
-                default = options[0].value,
+                id = "stop%d" % slot,
+                name = "Stop %d" % slot,
+                desc = "Nearest first. Leave as Not used to skip.",
+                icon = "route",
+                default = SLOT_UNUSED,
                 options = options,
             ),
-        ]
-
-    directions = fetch_destinations(stop)
-    if len(directions) < 2:
-        return []
-
-    options = [schema.Option(display = "Both directions", value = ALL_DIRECTIONS)]
-    for entry in directions:
-        options.append(
-            schema.Option(
-                display = "To %s" % entry["l"],
-                # Carry the whole set of terminals in this direction, so the
-                # filter still catches the runs that end somewhere else on the
-                # same heading -- the 159 outbound reaches Fort Lee, Cliffside
-                # Park and Fairview, and all three mean "outbound".
-                value = json.encode(entry["m"]),
-            ),
         )
-
-    return [
-        schema.Dropdown(
-            id = "direction%d" % slot,
-            name = "Direction %d" % slot,
-            desc = "Which way you are travelling.",
-            icon = "signsPost",
-            default = ALL_DIRECTIONS,
-            options = options,
-        ),
-    ]
-
-# Pixlet keys a handler by field id, so each slot needs its own exported
-# function even though they all defer to the same implementation.
-
-def direction_field_1(stop_value):
-    return slot_direction_field(stop_value, 1)
-
-def direction_field_2(stop_value):
-    return slot_direction_field(stop_value, 2)
-
-def direction_field_3(stop_value):
-    return slot_direction_field(stop_value, 3)
-
-def direction_field_4(stop_value):
-    return slot_direction_field(stop_value, 4)
-
-def direction_field_5(stop_value):
-    return slot_direction_field(stop_value, 5)
-
-def direction_field_6(stop_value):
-    return slot_direction_field(stop_value, 6)
+    return fields
 
 def get_schema():
     """One address, then six stop slots shown in the order they are filled in.
@@ -1145,64 +944,9 @@ def get_schema():
                 icon = "locationDot",
             ),
             schema.Generated(
-                id = "stop_picker1",
+                id = "stop_pickers",
                 source = "home",
-                handler = stops1,
-            ),
-            schema.Generated(
-                id = "direction_picker1",
-                source = "stop1",
-                handler = direction_field_1,
-            ),
-            schema.Generated(
-                id = "stop_picker2",
-                source = "home",
-                handler = stops2,
-            ),
-            schema.Generated(
-                id = "direction_picker2",
-                source = "stop2",
-                handler = direction_field_2,
-            ),
-            schema.Generated(
-                id = "stop_picker3",
-                source = "home",
-                handler = stops3,
-            ),
-            schema.Generated(
-                id = "direction_picker3",
-                source = "stop3",
-                handler = direction_field_3,
-            ),
-            schema.Generated(
-                id = "stop_picker4",
-                source = "home",
-                handler = stops4,
-            ),
-            schema.Generated(
-                id = "direction_picker4",
-                source = "stop4",
-                handler = direction_field_4,
-            ),
-            schema.Generated(
-                id = "stop_picker5",
-                source = "home",
-                handler = stops5,
-            ),
-            schema.Generated(
-                id = "direction_picker5",
-                source = "stop5",
-                handler = direction_field_5,
-            ),
-            schema.Generated(
-                id = "stop_picker6",
-                source = "home",
-                handler = stops6,
-            ),
-            schema.Generated(
-                id = "direction_picker6",
-                source = "stop6",
-                handler = direction_field_6,
+                handler = stop_fields,
             ),
         ],
     )
