@@ -478,6 +478,11 @@ latitude/longitude inputs, and its "Locality" box is cosmetic (typing into it
 does not geocode). The realtime address search users expect lives in the Tidbyt
 **mobile app**, which is where `schema.Location` becomes a real map picker.
 
+Its **Locality** and **Timezone** boxes are inert: nothing fills them in when
+the coordinates change, and this app never reads them. Only latitude and
+longitude matter. In the Tidbyt mobile app the location picker populates all of
+these from the address you choose.
+
 So there is a local dev UI that fills the gap:
 
 ```bash

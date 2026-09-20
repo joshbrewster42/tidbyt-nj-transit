@@ -114,6 +114,12 @@ MODE_NAMES = {"b": "Bus", "l": "Light Rail", "f": "Ferry"}
 # and a list where most rows look identical is a list nobody can scan.
 MODE_TAGS = {"b": "BUS", "l": "RAIL", "f": "FERRY"}
 
+# The badge needs a visible separator. Padding it out with spaces does not
+# work -- the picker renders as HTML, which collapses runs of whitespace, so
+# "BUS  Park Ave" arrives as "BUS Park Ave" and reads as one phrase. The
+# middle dot also stays clear of the " - " already used before the route list.
+MODE_SEPARATOR = " \u00b7 "
+
 # A floor, not a quota: at least this many light rail stations and ferry
 # terminals always make the picker, however far down a distance ranking they
 # fall, because bus stops are dense enough to bury a whole mode. Anything
@@ -944,7 +950,7 @@ def stop_options(location, mode = ""):
         miles = "%d.%d" % (tenths // 10, tenths % 10)
 
         stop_mode = stop.get("m", "b")
-        label = "%s  %s" % (MODE_TAGS.get(stop_mode, "BUS"), stop["n"])
+        label = MODE_TAGS.get(stop_mode, "BUS") + MODE_SEPARATOR + stop["n"]
 
         # Most stops sit on one side of a street and serve one direction, so a
         # street corner appears twice under the same name. Saying where each
