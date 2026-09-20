@@ -803,8 +803,6 @@ def configured_slots(config):
     """The slots that have been filled in, in the order they appear."""
     out = []
     for slot in range(1, SLOTS + 1):
-        if config.get("mode%d" % slot, "off") == "off":
-            continue
         raw = config.get("stop%d" % slot)
         if not stop_configured(raw):
             continue
@@ -977,93 +975,30 @@ def stop_options(location, mode = ""):
         )
     return options
 
-# A LocationBased handler is only handed the location, so it cannot read the
-# chosen mode. One small handler per mode is how the filter gets through.
+# One handler per slot. A LocationBased handler is only ever handed the
+# location, so these are all the same call -- but pixlet builds its handler
+# table from the static schema and keys each entry by field id, so every slot
+# needs its own exported function.
 
-def stops_all(location):
+def stops1(location):
     return stop_options(location)
 
-def stops_bus(location):
-    return stop_options(location, "b")
+def stops2(location):
+    return stop_options(location)
 
-def stops_light_rail(location):
-    return stop_options(location, "l")
+def stops3(location):
+    return stop_options(location)
 
-def stops_ferry(location):
-    return stop_options(location, "f")
+def stops4(location):
+    return stop_options(location)
 
-MODE_PICKERS = {
-    "all": [
-        "Stop or station",
-        "Bus stops, light rail and ferries near you.",
-        "route",
-        stops_all,
-    ],
-    "b": ["Bus stop", "Bus stops near you.", "bus", stops_bus],
-    "l": ["Station", "Light rail stations near you.", "train", stops_light_rail],
-    "f": ["Terminal", "Ferry terminals near you.", "ship", stops_ferry],
-}
+def stops5(location):
+    return stop_options(location)
 
-def slot_stop_field(mode, slot):
-    """The stop picker for one slot, in whichever mode that slot chose.
+def stops6(location):
+    return stop_options(location)
 
-    A single list of everything nearby runs to two dozen entries, almost all
-    of them bus stops. Choosing the mode first turns that into a short list of
-    the thing actually being looked for.
-    """
-    if mode == "off":
-        return []
-
-    picker = MODE_PICKERS.get(mode, MODE_PICKERS["all"])
-    return [
-        schema.LocationBased(
-            id = "stop%d" % slot,
-            name = "%s %d" % (picker[0], slot),
-            desc = picker[1],
-            icon = picker[2],
-            handler = picker[3],
-        ),
-    ]
-
-# Pixlet resolves a schema handler by its function name, so handlers have to be
-# top-level and cannot be closures over a slot number. Hence one thin pair of
-# wrappers per slot.
-
-def stop_field_1(mode):
-    return slot_stop_field(mode, 1)
-
-def direction_field_1(stop_value):
-    return slot_direction_field(stop_value, 1)
-
-def stop_field_2(mode):
-    return slot_stop_field(mode, 2)
-
-def direction_field_2(stop_value):
-    return slot_direction_field(stop_value, 2)
-
-def stop_field_3(mode):
-    return slot_stop_field(mode, 3)
-
-def direction_field_3(stop_value):
-    return slot_direction_field(stop_value, 3)
-
-def stop_field_4(mode):
-    return slot_stop_field(mode, 4)
-
-def direction_field_4(stop_value):
-    return slot_direction_field(stop_value, 4)
-
-def stop_field_5(mode):
-    return slot_stop_field(mode, 5)
-
-def direction_field_5(stop_value):
-    return slot_direction_field(stop_value, 5)
-
-def stop_field_6(mode):
-    return slot_stop_field(mode, 6)
-
-def direction_field_6(stop_value):
-    return slot_direction_field(stop_value, 6)
+SLOT_HANDLERS = [stops1, stops2, stops3, stops4, stops5, stops6]
 
 def slot_direction_field(stop_value, slot):
     """A direction picker for one slot.
@@ -1137,125 +1072,106 @@ def slot_direction_field(stop_value, slot):
         ),
     ]
 
-MODE_OPTIONS = [
-    schema.Option(display = "Not used", value = "off"),
-    schema.Option(display = "Everything nearby", value = "all"),
-    schema.Option(display = "Bus", value = "b"),
-    schema.Option(display = "Light Rail", value = "l"),
-    schema.Option(display = "Ferry", value = "f"),
-]
+# Pixlet keys a handler by field id, so each slot needs its own exported
+# function even though they all defer to the same implementation.
+
+def direction_field_1(stop_value):
+    return slot_direction_field(stop_value, 1)
+
+def direction_field_2(stop_value):
+    return slot_direction_field(stop_value, 2)
+
+def direction_field_3(stop_value):
+    return slot_direction_field(stop_value, 3)
+
+def direction_field_4(stop_value):
+    return slot_direction_field(stop_value, 4)
+
+def direction_field_5(stop_value):
+    return slot_direction_field(stop_value, 5)
+
+def direction_field_6(stop_value):
+    return slot_direction_field(stop_value, 6)
 
 def get_schema():
-    """Six slots, each a mode, a stop and a direction.
+    """Six stop slots, shown in the order they are filled in.
 
-    They appear on screen in slot order, so the order things are configured is
-    the order they are read. Slots left as "Not used" are skipped entirely.
+    Every picker is declared here rather than generated. Pixlet builds its
+    handler table from this static schema, so a handler that only appears on a
+    field returned by schema.Generated is never registered -- asking for its
+    options answers "no exported handler named ...". Generated fields can carry
+    plain dropdowns, which is what the direction pickers are, but not anything
+    that needs a callback of its own.
     """
     return schema.Schema(
         version = "1",
         fields = [
-            schema.Dropdown(
-                id = "mode1",
-                name = "Slot 1",
-                desc = "What to watch in slot 1.",
-                icon = "layerGroup",
-                default = "all",
-                options = MODE_OPTIONS,
-            ),
-            schema.Generated(
-                id = "stop_picker1",
-                source = "mode1",
-                handler = stop_field_1,
+            schema.LocationBased(
+                id = "stop1",
+                name = "Stop 1",
+                desc = "Bus stops, light rail and ferries near you.",
+                icon = "route",
+                handler = stops1,
             ),
             schema.Generated(
                 id = "direction_picker1",
                 source = "stop1",
                 handler = direction_field_1,
             ),
-            schema.Dropdown(
-                id = "mode2",
-                name = "Slot 2",
-                desc = "What to watch in slot 2. Leave blank to skip.",
-                icon = "layerGroup",
-                default = "off",
-                options = MODE_OPTIONS,
-            ),
-            schema.Generated(
-                id = "stop_picker2",
-                source = "mode2",
-                handler = stop_field_2,
+            schema.LocationBased(
+                id = "stop2",
+                name = "Stop 2",
+                desc = "Bus stops, light rail and ferries near you. Leave empty to skip.",
+                icon = "route",
+                handler = stops2,
             ),
             schema.Generated(
                 id = "direction_picker2",
                 source = "stop2",
                 handler = direction_field_2,
             ),
-            schema.Dropdown(
-                id = "mode3",
-                name = "Slot 3",
-                desc = "What to watch in slot 3. Leave blank to skip.",
-                icon = "layerGroup",
-                default = "off",
-                options = MODE_OPTIONS,
-            ),
-            schema.Generated(
-                id = "stop_picker3",
-                source = "mode3",
-                handler = stop_field_3,
+            schema.LocationBased(
+                id = "stop3",
+                name = "Stop 3",
+                desc = "Bus stops, light rail and ferries near you. Leave empty to skip.",
+                icon = "route",
+                handler = stops3,
             ),
             schema.Generated(
                 id = "direction_picker3",
                 source = "stop3",
                 handler = direction_field_3,
             ),
-            schema.Dropdown(
-                id = "mode4",
-                name = "Slot 4",
-                desc = "What to watch in slot 4. Leave blank to skip.",
-                icon = "layerGroup",
-                default = "off",
-                options = MODE_OPTIONS,
-            ),
-            schema.Generated(
-                id = "stop_picker4",
-                source = "mode4",
-                handler = stop_field_4,
+            schema.LocationBased(
+                id = "stop4",
+                name = "Stop 4",
+                desc = "Bus stops, light rail and ferries near you. Leave empty to skip.",
+                icon = "route",
+                handler = stops4,
             ),
             schema.Generated(
                 id = "direction_picker4",
                 source = "stop4",
                 handler = direction_field_4,
             ),
-            schema.Dropdown(
-                id = "mode5",
-                name = "Slot 5",
-                desc = "What to watch in slot 5. Leave blank to skip.",
-                icon = "layerGroup",
-                default = "off",
-                options = MODE_OPTIONS,
-            ),
-            schema.Generated(
-                id = "stop_picker5",
-                source = "mode5",
-                handler = stop_field_5,
+            schema.LocationBased(
+                id = "stop5",
+                name = "Stop 5",
+                desc = "Bus stops, light rail and ferries near you. Leave empty to skip.",
+                icon = "route",
+                handler = stops5,
             ),
             schema.Generated(
                 id = "direction_picker5",
                 source = "stop5",
                 handler = direction_field_5,
             ),
-            schema.Dropdown(
-                id = "mode6",
-                name = "Slot 6",
-                desc = "What to watch in slot 6. Leave blank to skip.",
-                icon = "layerGroup",
-                default = "off",
-                options = MODE_OPTIONS,
-            ),
-            schema.Generated(
-                id = "stop_picker6",
-                source = "mode6",
-                handler = stop_field_6,
+            schema.LocationBased(
+                id = "stop6",
+                name = "Stop 6",
+                desc = "Bus stops, light rail and ferries near you. Leave empty to skip.",
+                icon = "route",
+                handler = stops6,
             ),
             schema.Generated(
                 id = "direction_picker6",

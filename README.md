@@ -100,6 +100,58 @@ ferry there is one code and the direction filters departures instead.
 Two entries sharing a name *and* a heading are the feed listing one place
 twice; the nearer one wins.
 
+### Why every picker is declared statically
+
+Pixlet builds its handler table from the schema `get_schema()` returns, and
+keys each entry by field id. **A handler that only appears on a field returned
+by `schema.Generated` is never registered.** Asking for its options answers:
+
+```
+no exported handler named 'stop1$stops_all'
+```
+
+An earlier version chose a mode first and generated a mode-specific stop
+picker from it. The field appeared correctly and the handler worked when called
+directly in a test, so it looked fine — but nothing ever exercised pixlet's own
+dispatch, and the picker would have failed for every real user. The dev UI hid
+it too, since that calls the Python functions rather than going through pixlet.
+
+Generated fields can still carry plain dropdowns, which is what the direction
+pickers are. They just cannot carry anything needing a callback of its own.
+
+So each slot declares its own `schema.LocationBased`, and the combined list
+leans on mode tags and `MODE_GUARANTEE` instead of a mode filter. Worth
+re-testing through `/api/v1/handlers/...` rather than a harness if this is ever
+revisited.
+
+### One entry per place, not per kerb
+
+A bus stop is a signpost on one side of the street, so a junction appears in
+the feed twice — same name, different stop codes, one per direction. A light
+rail platform and a ferry dock are single places where vehicles leave both
+ways, so they were already one entry with a direction dropdown.
+
+Buses now get the same shape. Same-name stops within 250 m collapse into one
+entry whose direction dropdown names each kerb:
+
+```
+Blvd East at 47/48th St to North Bergen / New York - 23, 128, 165, 166 (0.2 mi)
+    To New York     -> {"c":"21822"}
+    To North Bergen -> {"c":"21818"}
+```
+
+Near Port Imperial this took 25 list entries covering 18 distinct places down
+to 25 entries covering 25 places, with zero duplicates.
+
+The stop codes matter, which is why the group carries them: the realtime API is
+queried **per stop code**, so for a grouped bus stop the direction picker is
+choosing which code to ask, not filtering what comes back. For light rail and
+ferry there is one code and the direction filters departures instead.
+`resolve_stop_code` and `direction_filter` sort out which is which.
+
+Two entries sharing a name *and* a heading are the feed listing one place
+twice; the nearer one wins.
+
 ### Mode first, then the stop
 
 Configuration is a **Mode** dropdown followed by a stop picker that regenerates
