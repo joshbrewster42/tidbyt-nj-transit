@@ -228,13 +228,29 @@ pixlet render nj_transit_nearby.star \
 - Light rail departures — real timetables, correct next-departure math
 - Rendering — light rail, River LINE colors, and the degraded no-credentials state
 
-**Not yet verified** — needs credentials:
+**Partly verified** — `authenticateUser` has been exercised against the live
+server with deliberately invalid credentials. It exists, answers HTTP 200, and
+returns `{"Authenticated": "False", "UserToken": ...}` — the documented shape,
+and the keys `bus_token()` reads.
 
-- The realtime bus path (`bus_token()` / `bus_departures()`) is written from the
-  documented API shape but has never been run against a live response. The
-  field names it parses (`DVTrip`, `public_route`, `header`, `departuretime`,
-  `sched_dep_time`) come from published client libraries, not from a response
-  observed here. **Expect to adjust the parsing once you have a real payload.**
+**Not yet verified** — needs working credentials:
+
+- `getBusDV`. The field names the app parses (`DVTrip`, `public_route`,
+  `header`, `departuretime`, `sched_dep_time`) come from published client
+  libraries, not from a response observed here. **Expect to adjust the parsing
+  once a real payload exists.**
+
+When credentials arrive:
+
+```bash
+export NJT_USERNAME='...'
+python3 pipeline/check_credentials.py 21923
+```
+
+It calls the API exactly as the app does, reports whether each expected field
+is present, and prints one full departure. Credentials are prompted for without
+echo, never written to disk, and the session token is redacted from every line,
+so the output is safe to paste anywhere.
 
 ---
 
@@ -446,5 +462,6 @@ and nothing is stored.
 | `python3 pipeline/devui.py` | Address-search dev UI + mock API |
 | `python3 pipeline/geocode.py --stops ADDR` | Coordinates and nearby stops for an address |
 | `python3 pipeline/run_tests.py` | Assertions for the destination matcher and helpers |
+| `python3 pipeline/check_credentials.py STOP` | Verify NJ Transit credentials and the live response shape |
 | Auto-refresh checkbox in the dev UI | Re-render every 30s, like the device does |
 | `pixlet check nj_transit_nearby.star` | Community-repo readiness |
