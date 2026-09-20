@@ -604,15 +604,20 @@ def filter_by_direction(departures, raw):
         return "none to %s" % terminals[0]
     return kept
 
-def fetch_destinations(stop):
-    """Destinations served from a stop, for the direction picker."""
+def fetch_destinations(stop, code = None):
+    """Destinations served from a stop, for the direction picker.
+
+    A grouped bus stop asks about each of its member codes in turn. They all
+    sit in the same grid cell, so this is one download however many are asked
+    for -- http.get caches it.
+    """
     key = cell_key(stop["lat"], stop["lon"]) if "lat" in stop else None
     if not key:
         return []
     resp = http.get("%s/dirs/%s.json" % (DATA_BASE, key), ttl_seconds = TTL_STATIC)
     if resp.status_code != 200:
         return []
-    return resp.json().get(stop["c"], [])
+    return resp.json().get(code if code else stop["c"], [])
 
 # ---------------------------------------------------------------------------
 # Rendering
@@ -822,11 +827,19 @@ def resolve_stop_code(stop, direction):
     return stop["c"]
 
 def direction_filter(direction):
-    """The terminal list to filter on, or nothing when the code already picked."""
+    """The terminal list to filter departures against, if any.
+
+    A grouped bus stop's choice carries both the kerb's stop code and that
+    kerb's terminals. The code narrows what is queried; the terminals still
+    have to narrow what comes back, because a kerb can serve both directions.
+    """
     if not direction:
         return ALL_DIRECTIONS
     chosen = json.decode(direction)
     if type(chosen) == "dict":
+        terminals = chosen.get("m", [])
+        if terminals:
+            return json.encode(terminals)
         return ALL_DIRECTIONS
     return direction
 
@@ -1044,14 +1057,22 @@ def slot_direction_field(stop_value, slot):
     members = stop.get("g", [])
 
     if len(members) > 1:
-        # A grouped bus stop: each member is one direction of travel already,
-        # so picking one needs no further filtering.
+        # A grouped bus stop: the choice names which kerb to query. Most kerbs
+        # serve one direction, but 17% of bus stops serve both, so carry that
+        # kerb's terminals too and keep filtering -- otherwise picking "To New
+        # York" at such a stop shows whatever leaves, in either direction.
         options = []
         for member in members:
+            code = member[0]
+            heading = member[1]
+            terminals = []
+            for entry in fetch_destinations(stop, code):
+                if not terminals or entry["l"] == heading:
+                    terminals = entry["m"]
             options.append(
                 schema.Option(
-                    display = "To %s" % member[1] if member[1] else "This stop",
-                    value = json.encode({"c": member[0]}),
+                    display = "To %s" % heading if heading else "This stop",
+                    value = json.encode({"c": code, "m": terminals}),
                 ),
             )
         return [

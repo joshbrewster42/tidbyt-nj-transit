@@ -379,9 +379,17 @@ async function addStop(i) {
 
   let dirs = [];
   if ((s.g || []).length > 1) {
-    // A grouped bus stop: the choice is which kerb, so each option names a
-    // stop code rather than a set of terminals to filter on.
-    dirs = s.g.map(m => ({l: m[1] || 'This stop', v: JSON.stringify({c: m[0]})}));
+    // A grouped bus stop: the choice names which kerb to query. It carries
+    // that kerb's terminals too, because 17% of bus stops serve both
+    // directions and the code alone would not narrow what comes back.
+    dirs = [];
+    for (const m of s.g) {
+      const rr = await fetch(`/api/dests?lat=${s.lat}&lon=${s.lon}&code=${encodeURIComponent(m[0])}`);
+      const entries = await rr.json();
+      let terms = [];
+      for (const e of entries) if (!terms.length || e.l === m[1]) terms = e.m;
+      dirs.push({l: m[1] || 'This stop', v: JSON.stringify({c: m[0], m: terms})});
+    }
   } else {
     const r = await fetch(`/api/dests?lat=${s.lat}&lon=${s.lon}&code=${encodeURIComponent(s.c)}`);
     const d = await r.json();
