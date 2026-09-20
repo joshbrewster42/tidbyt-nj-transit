@@ -401,10 +401,14 @@ So there is a local dev UI that fills the gap:
 python3 pipeline/devui.py
 ```
 
-Open <http://127.0.0.1:8090>, type an address, pick the match, and it lists the
-stops the app would offer — click any one to see the actual rendered Tidbyt
-output. It starts the mock API itself, so bus departures work with no
-credentials.
+Open <http://127.0.0.1:8090>, type an address, pick the match, and click stops
+to add them in the order you want. It starts the mock API itself, so bus
+departures work with no credentials.
+
+It also rebuilds the dev copy of the app whenever the source is newer. That
+used to be a manual step, which meant editing the app and reloading the preview
+showed the **previous** version — silently, and for as long as it took someone
+to notice they were debugging a fix that had already landed.
 
 For a one-off from the terminal:
 
@@ -423,7 +427,7 @@ and nothing is stored.
 | Command | What it does |
 |---|---|
 | `python3 pipeline/build_index.py` | Rebuild `data/v1/` from the GTFS feeds |
-| `python3 pipeline/make_dev_copy.py` | Regenerate `.dev/` copy (run after editing the app) |
+| `python3 pipeline/make_dev_copy.py` | Regenerate `.dev/` copy by hand (devui does this automatically) |
 | `python3 pipeline/devui.py` | Address-search dev UI + mock API |
 | `python3 pipeline/geocode.py --stops ADDR` | Coordinates and nearby stops for an address |
 | `python3 pipeline/run_tests.py` | Assertions for the destination matcher and helpers |
