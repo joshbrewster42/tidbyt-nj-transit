@@ -53,8 +53,12 @@ def haversine_km(lat1, lon1, lat2, lon2):
     return 2 * r * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 
-def nearby(lat, lon, limit=25):
-    """Mirror the app's own cell lookup so results match the real picker."""
+def nearby(lat, lon, mode="", limit=25):
+    """Mirror the app's own cell lookup so results match the real picker.
+
+    Filtering happens before the limit, exactly as the app does it: asking for
+    ferries must not mean "the 25 nearest stops of any kind, ferries only".
+    """
     ci, cj = math.floor(lat / CELL_SIZE), math.floor(lon / CELL_SIZE)
     di = 1 if (lat / CELL_SIZE - ci) >= 0.5 else -1
     dj = 1 if (lon / CELL_SIZE - cj) >= 0.5 else -1
@@ -68,20 +72,26 @@ def nearby(lat, lon, limit=25):
 
     scored = []
     for s in stops:
+        if mode and s["m"] != mode:
+            continue
         d = haversine_km(lat, lon, s["lat"], s["lon"])
         item = dict(s)
         item["mi"] = round(d * 0.621371, 2)
         scored.append(item)
     scored.sort(key=lambda s: s["mi"])
-    chosen = scored[:limit]
 
+    if mode:
+        # One mode is already its own group; nothing can be crowded out.
+        return scored[:limit]
+
+    chosen = scored[:limit]
     seen = {s["m"] + s["c"] for s in chosen}
-    for mode in ("l", "f"):
-        present = sum(1 for s in chosen if s["m"] == mode)
+    for guaranteed in ("l", "f"):
+        present = sum(1 for s in chosen if s["m"] == guaranteed)
         for s in scored:
             if present >= MODE_GUARANTEE:
                 break
-            if s["m"] != mode or (s["m"] + s["c"]) in seen:
+            if s["m"] != guaranteed or (s["m"] + s["c"]) in seen:
                 continue
             chosen.append(s)
             seen.add(s["m"] + s["c"])
@@ -165,7 +175,9 @@ PAGE = """<!DOCTYPE html>
               overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .tag { font-size: 10px; font-weight: 700; padding: 2px 6px; border-radius: 4px;
          color: #11151c; letter-spacing: .03em; }
-  .tag.b { background: var(--amber); } .tag.l { background: #2bb3b3; }
+  .tag.b { background: var(--amber); }
+  .tag.l { background: #2bb3b3; }
+  .tag.f { background: #1e9bd7; }
   .preview { padding: 18px 15px; text-align: center; }
   .preview img { image-rendering: pixelated; max-width: 100%;
                  border-radius: 5px; border: 1px solid var(--line); }
@@ -209,6 +221,11 @@ PAGE = """<!DOCTYPE html>
 const $ = id => document.getElementById(id);
 let timer = null, lastStops = [];
 
+// Keyed by the mode letter the data uses, so a new mode shows up as its own
+// letter rather than silently mislabelling itself as a bus. The colours match
+// LINE_COLORS and FERRY_COLOR in the app.
+const MODE_TAG = {b: 'BUS', l: 'RAIL', f: 'FERRY'};
+
 // The real device re-renders on a cadence set by Tidbyt's backend; this
 // approximates that so a preview is not a frozen snapshot. 30s matches the
 // app's realtime cache window -- polling faster only re-serves cached data.
@@ -248,9 +265,12 @@ async function search(q) {
   }
 }
 
+let lastCoords = null;
+
 async function pick(lat, lon) {
   $('places').innerHTML = '';
   $('hint').textContent = 'Stops near that address:';
+  lastCoords = [lat, lon];
   const r = await fetch(`/api/stops?lat=${lat}&lon=${lon}`);
   lastStops = await r.json();
   if (!lastStops.length) {
@@ -258,15 +278,41 @@ async function pick(lat, lon) {
       '<div class="empty">No stops within range. Is the address in New Jersey?</div>');
     return;
   }
+  renderStops();
+}
+
+// Mirrors the app's Mode field: one long list is almost all bus stops, so the
+// mode is chosen first and the list becomes short and readable.
+let modeFilter = '';
+
+async function setMode(m) {
+  modeFilter = m;
+  const [lat, lon] = lastCoords;
+  const r = await fetch(`/api/stops?lat=${lat}&lon=${lon}&mode=${m}`);
+  lastStops = await r.json();
+  renderStops();
+}
+
+function renderStops() {
+  const [lat, lon] = lastCoords;
+  // Counts are only meaningful for the list currently loaded, so label the
+  // tabs plainly rather than quoting a number that changes on click.
+  const tabs = [['', 'Everything'], ['b', 'Bus'],
+                ['l', 'Light Rail'], ['f', 'Ferry']]
+    .map(t => `<span class="chip ${modeFilter === t[0] ? 'on' : ''}"
+                     onclick="setMode('${t[0]}')">${t[1]}</span>`).join('');
+
+  const shown = lastStops;
   $('stops').innerHTML = card('Nearby stops',
+    `<div class="chips">${tabs}</div>` +
     `<div class="coords">${lat.toFixed(5)}, ${lon.toFixed(5)}</div>` +
-    lastStops.map((s, i) =>
-    `<div class="row" id="s${i}" onclick="show(${i})">
+    shown.map((s) =>
+    `<div class="row" id="s${lastStops.indexOf(s)}" onclick="show(${lastStops.indexOf(s)})">
        <span class="mi">${s.mi.toFixed(1)} mi</span>
-       <span class="tag ${s.m}">${s.m === 'l' ? 'RAIL' : 'BUS'}</span>
+       <span class="tag ${s.m}">${MODE_TAG[s.m] || s.m.toUpperCase()}</span>
        <span class="nm">${esc(s.n)}${s.t ? ' <span style="color:var(--accent)">to ' + esc(s.t) + '</span>' : ''}<small>${esc((s.r || []).join(', '))}</small></span>
      </div>`).join(''));
-  show(0);
+  if (shown.length) show(lastStops.indexOf(shown[0]));
 }
 
 let current = null, direction = '';
@@ -372,7 +418,7 @@ class Handler(BaseHTTPRequestHandler):
                 lon = float((q.get("lon") or ["0"])[0])
             except ValueError:
                 return self._send(json.dumps([]), status=400)
-            return self._send(json.dumps(nearby(lat, lon)))
+            return self._send(json.dumps(nearby(lat, lon, (q.get("mode") or [""])[0])))
 
         if parts.path == "/api/dests":
             try:

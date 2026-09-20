@@ -137,7 +137,7 @@ def fetch_cell(key):
         return []
     return resp.json()
 
-def nearby_stops(lat, lon, limit = 24):
+def nearby_stops(lat, lon, mode = "", limit = 24):
     """Stops near a point, nearest first.
 
     Fetches the cell containing the point plus the three cells adjacent to
@@ -158,9 +158,16 @@ def nearby_stops(lat, lon, limit = 24):
 
     scored = []
     for s in candidates:
+        # Filter before ranking, or asking for ferries would return the 24
+        # nearest stops of any kind and then keep whichever happened to float.
+        if mode and s["m"] != mode:
+            continue
         scored.append((haversine_km(lat, lon, s["lat"], s["lon"]), s))
     scored = sorted(scored, key = lambda pair: pair[0])
 
+    if mode:
+        # One mode is already its own group; nothing can be crowded out.
+        return scored[:limit]
     return guarantee_modes(scored, limit)
 
 def guarantee_modes(scored, limit):
@@ -761,7 +768,7 @@ def main(config):
 # Configuration schema
 # ---------------------------------------------------------------------------
 
-def stop_options(location):
+def stop_options(location, mode = ""):
     """Nearest stops to the location the user picked in the mobile app.
 
     This runs on Tidbyt's servers when someone configures the app, not on the
@@ -772,18 +779,19 @@ def stop_options(location):
     lon = float(loc["lng"])
 
     options = []
-    for (dist_km, stop) in nearby_stops(lat, lon):
+    for (dist_km, stop) in nearby_stops(lat, lon, mode):
         mode = stop.get("m", "b")
 
         # Starlark's % operator has no precision specifier, so round by hand.
         tenths = int(dist_km * 0.621371 * 10 + 0.5)
         miles = "%d.%d" % (tenths // 10, tenths % 10)
 
+        stop_mode = stop.get("m", "b")
         label = stop["n"]
-        if mode != "b":
+        if stop_mode != "b":
             # A boat and a bus stop can share a neighbourhood and a name; say
             # which this is.
-            label += " (%s)" % MODE_NAMES.get(mode, "Bus")
+            label += " (%s)" % MODE_NAMES.get(stop_mode, "Bus")
 
         # Most stops sit on one side of a street and serve one direction, so a
         # street corner appears twice under the same name. Saying where each
@@ -796,7 +804,7 @@ def stop_options(location):
         # heading would just repeat it. Bus and light rail route numbers do add
         # something.
         routes = ", ".join(stop.get("r", [])[:4])
-        if routes and mode != "f":
+        if routes and stop_mode != "f":
             label += " - %s" % routes
 
         options.append(
@@ -809,11 +817,56 @@ def stop_options(location):
     if not options:
         options.append(
             schema.Option(
-                display = "No stops found nearby",
+                display = "Nothing found nearby",
                 value = DEFAULT_STOP,
             ),
         )
     return options
+
+# A LocationBased handler is only handed the location, so it cannot read the
+# chosen mode. One small handler per mode is how the filter gets through.
+
+def stops_all(location):
+    return stop_options(location)
+
+def stops_bus(location):
+    return stop_options(location, "b")
+
+def stops_light_rail(location):
+    return stop_options(location, "l")
+
+def stops_ferry(location):
+    return stop_options(location, "f")
+
+MODE_PICKERS = {
+    "all": [
+        "Stop or station",
+        "Bus stops, light rail and ferries near you.",
+        "route",
+        stops_all,
+    ],
+    "b": ["Bus stop", "Bus stops near you.", "bus", stops_bus],
+    "l": ["Station", "Light rail stations near you.", "train", stops_light_rail],
+    "f": ["Terminal", "Ferry terminals near you.", "ship", stops_ferry],
+}
+
+def stop_field(mode):
+    """The stop picker for whichever mode was chosen.
+
+    A single list of everything nearby runs to two dozen entries, almost all
+    of them bus stops. Choosing the mode first turns that into a short list of
+    the thing actually being looked for.
+    """
+    picker = MODE_PICKERS.get(mode, MODE_PICKERS["all"])
+    return [
+        schema.LocationBased(
+            id = "stop",
+            name = picker[0],
+            desc = picker[1],
+            icon = picker[2],
+            handler = picker[3],
+        ),
+    ]
 
 def direction_field(stop_value):
     """A direction-of-travel filter, but only where it earns its place.
@@ -855,18 +908,25 @@ def get_schema():
     return schema.Schema(
         version = "1",
         fields = [
-            schema.Location(
-                id = "location",
-                name = "Location",
-                desc = "Your address, used to find the closest stops.",
-                icon = "locationDot",
+            # No separate Location field: LocationBased brings its own address
+            # picker, and having two was just two places to type an address.
+            schema.Dropdown(
+                id = "mode",
+                name = "Mode",
+                desc = "Which kind of service to show.",
+                icon = "layerGroup",
+                default = "all",
+                options = [
+                    schema.Option(display = "Everything nearby", value = "all"),
+                    schema.Option(display = "Bus", value = "b"),
+                    schema.Option(display = "Light Rail", value = "l"),
+                    schema.Option(display = "Ferry", value = "f"),
+                ],
             ),
-            schema.LocationBased(
-                id = "stop",
-                name = "Stop",
-                desc = "The closest bus stops and light rail stations.",
-                icon = "bus",
-                handler = stop_options,
+            schema.Generated(
+                id = "stop_picker",
+                source = "mode",
+                handler = stop_field,
             ),
             schema.Generated(
                 id = "direction_picker",

@@ -35,26 +35,35 @@ nearby stops means fetching the cell you are standing in plus the three
 adjacent to the nearest corner — a few KB, not an index of every stop in
 New Jersey.
 
-### All three modes share one picker
+### Mode first, then the stop
 
-Bus stops, light rail stations and ferry terminals appear in a single list
-ranked by distance, each labelled with its mode and heading:
+Configuration is a **Mode** dropdown followed by a stop picker that regenerates
+to match: choose Ferry and the field becomes "Terminal — ferry terminals near
+you", listing only boats.
 
-```
-Park Ave at Pleasant Ave to Hoboken - 89 (0.2 mi)
-Lincoln Harbor (Light Rail) to Tonnelle Ave / West Side Ave - HBLR (0.3 mi)
-Lincoln Harbor (Ferry) to Hoboken / Midtown / W. 39th St. (0.5 mi)
-```
+This matters because bus stops are dense. A single combined list runs to two
+dozen entries that are almost all buses — from a spot a few blocks inland of
+Weehawken there are 24 within 0.4 miles, enough to push the ferry terminal half
+a mile away off the list entirely. Picking the mode first turns that into ten
+ferry terminals, nearest first.
 
-Pure distance ranking is not enough on its own. Bus stops are dense — from a
-spot a few blocks inland of Weehawken there are two dozen within 0.4 miles,
-enough to push the ferry terminal half a mile away off the list entirely, so
-somebody who wants the ferry cannot find it at all.
+Filtering happens *before* the distance limit, or asking for ferries would mean
+"the 24 nearest stops of any kind, ferries only" — which from that same spot is
+exactly one.
 
-`MODE_GUARANTEE` fixes that: the nearest light rail station and ferry terminal
-always appear, however far down they rank. It is a floor rather than a quota —
-set to 1, because forcing a second terminal drags in landings across the Hudson
-to fill a slot. Anything genuinely close still earns its place on distance.
+"Everything nearby" keeps the combined list, where `MODE_GUARANTEE` reserves a
+place for the nearest light rail station and ferry terminal however far down
+they rank. It is a floor rather than a quota — set to 1, because at two it
+drags in landings across the Hudson to fill a slot.
+
+Mechanically the picker is a `schema.Generated` field sourced from `mode` that
+returns a `schema.LocationBased` with a mode-specific handler. A LocationBased
+handler is only ever handed the location, so it cannot read the chosen mode —
+one small handler per mode is how the filter gets through. Every variant uses
+the same field id, so `config.get("stop")` works regardless.
+
+There is no separate `schema.Location` field: `LocationBased` brings its own
+address picker, and having both meant two places to type an address.
 
 The heavy data is only needed **at configuration time**, not at render time.
 That is what keeps the device-side path small.
