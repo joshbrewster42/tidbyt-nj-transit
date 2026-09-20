@@ -495,7 +495,12 @@ def _hhmm_to_minutes(hhmm):
 # Destination filtering
 # ---------------------------------------------------------------------------
 
-ALL_DIRECTIONS = ""
+# A dropdown option's value cannot be empty, and a dropdown must carry a
+# default: pixlet answers "Field validation for 'Value' failed on the
+# 'required' tag". So both "no filter" and "slot unused" need real sentinels
+# rather than "".
+ALL_DIRECTIONS = "all"
+SLOT_UNUSED = "off"
 
 # Words too generic to identify a destination on their own.
 FILLER = {
@@ -783,13 +788,13 @@ def message_screen(text):
     )
 
 def unwrap_stop(raw):
-    """Decode a stop value, tolerating pixlet's LocationBased envelope.
+    """Decode a stop value, tolerating pixlet's selection envelope.
 
     A LocationBased selection does not arrive as the string put in
     schema.Option.value; pixlet wraps it as {"display": ..., "value": ...}, so
     the real payload is one decode deeper.
     """
-    if not raw:
+    if not raw or raw == SLOT_UNUSED:
         return json.decode(DEFAULT_STOP)
 
     stop = json.decode(raw)
@@ -803,7 +808,7 @@ def unwrap_stop(raw):
 
 def stop_configured(raw):
     """Has this slot actually been given a stop?"""
-    if not raw:
+    if not raw or raw == SLOT_UNUSED:
         return False
     decoded = json.decode(raw)
     if type(decoded) == "dict" and "value" in decoded and "m" not in decoded:
@@ -829,7 +834,7 @@ def resolve_stop_code(stop, direction):
     A grouped bus stop holds one code per kerb, and the direction picker says
     which. Anything else has a single code and the direction only filters.
     """
-    if direction:
+    if direction and direction != ALL_DIRECTIONS:
         chosen = json.decode(direction)
         if type(chosen) == "dict" and "c" in chosen:
             return chosen["c"]
@@ -842,7 +847,7 @@ def direction_filter(direction):
     kerb's terminals. The code narrows what is queried; the terminals still
     have to narrow what comes back, because a kerb can serve both directions.
     """
-    if not direction:
+    if not direction or direction == ALL_DIRECTIONS:
         return ALL_DIRECTIONS
     chosen = json.decode(direction)
     if type(chosen) == "dict":
@@ -982,30 +987,47 @@ def stop_options(location, mode = ""):
         )
     return options
 
-# One handler per slot. A LocationBased handler is only ever handed the
-# location, so these are all the same call -- but pixlet builds its handler
-# table from the static schema and keys each entry by field id, so every slot
-# needs its own exported function.
+# The address is entered once, into a single schema.Location, and each slot is
+# a dropdown generated from it. Six LocationBased fields would each carry their
+# own address picker, which meant typing the same address six times.
+#
+# A generated field can safely return a Dropdown: dropdowns have no handler of
+# their own, so nothing needs to be in pixlet's handler table. That is exactly
+# what a LocationBased cannot do here.
+
+def slot_stop_field(location, slot):
+    """A dropdown of nearby stops for one slot."""
+    options = [schema.Option(display = "Not used", value = SLOT_UNUSED)]
+    options.extend(stop_options(location))
+
+    return [
+        schema.Dropdown(
+            id = "stop%d" % slot,
+            name = "Stop %d" % slot,
+            desc = "Nearest first. Leave as Not used to skip.",
+            icon = "route",
+            default = SLOT_UNUSED,
+            options = options,
+        ),
+    ]
 
 def stops1(location):
-    return stop_options(location)
+    return slot_stop_field(location, 1)
 
 def stops2(location):
-    return stop_options(location)
+    return slot_stop_field(location, 2)
 
 def stops3(location):
-    return stop_options(location)
+    return slot_stop_field(location, 3)
 
 def stops4(location):
-    return stop_options(location)
+    return slot_stop_field(location, 4)
 
 def stops5(location):
-    return stop_options(location)
+    return slot_stop_field(location, 5)
 
 def stops6(location):
-    return stop_options(location)
-
-SLOT_HANDLERS = [stops1, stops2, stops3, stops4, stops5, stops6]
+    return slot_stop_field(location, 6)
 
 def slot_direction_field(stop_value, slot):
     """A direction picker for one slot.
@@ -1101,23 +1123,30 @@ def direction_field_6(stop_value):
     return slot_direction_field(stop_value, 6)
 
 def get_schema():
-    """Six stop slots, shown in the order they are filled in.
+    """One address, then six stop slots shown in the order they are filled in.
 
-    Every picker is declared here rather than generated. Pixlet builds its
-    handler table from this static schema, so a handler that only appears on a
-    field returned by schema.Generated is never registered -- asking for its
-    options answers "no exported handler named ...". Generated fields can carry
-    plain dropdowns, which is what the direction pickers are, but not anything
-    that needs a callback of its own.
+    The address is a single schema.Location. Each slot is a dropdown generated
+    from it, so nearby stops are computed once per location rather than asking
+    for the same address six times over.
+
+    Pixlet builds its handler table from this static schema and keys it by
+    field id, so a handler that only appears on a *generated* field is never
+    registered -- requesting its options answers "no exported handler named
+    ...". Generated fields may therefore return dropdowns, which carry no
+    handler, but not a LocationBased, which does.
     """
     return schema.Schema(
         version = "1",
         fields = [
-            schema.LocationBased(
-                id = "stop1",
-                name = "Stop 1",
-                desc = "Bus stops, light rail and ferries near you.",
-                icon = "route",
+            schema.Location(
+                id = "home",
+                name = "Location",
+                desc = "Your address. Everything below is measured from here.",
+                icon = "locationDot",
+            ),
+            schema.Generated(
+                id = "stop_picker1",
+                source = "home",
                 handler = stops1,
             ),
             schema.Generated(
@@ -1125,11 +1154,9 @@ def get_schema():
                 source = "stop1",
                 handler = direction_field_1,
             ),
-            schema.LocationBased(
-                id = "stop2",
-                name = "Stop 2",
-                desc = "Bus stops, light rail and ferries near you. Leave empty to skip.",
-                icon = "route",
+            schema.Generated(
+                id = "stop_picker2",
+                source = "home",
                 handler = stops2,
             ),
             schema.Generated(
@@ -1137,11 +1164,9 @@ def get_schema():
                 source = "stop2",
                 handler = direction_field_2,
             ),
-            schema.LocationBased(
-                id = "stop3",
-                name = "Stop 3",
-                desc = "Bus stops, light rail and ferries near you. Leave empty to skip.",
-                icon = "route",
+            schema.Generated(
+                id = "stop_picker3",
+                source = "home",
                 handler = stops3,
             ),
             schema.Generated(
@@ -1149,11 +1174,9 @@ def get_schema():
                 source = "stop3",
                 handler = direction_field_3,
             ),
-            schema.LocationBased(
-                id = "stop4",
-                name = "Stop 4",
-                desc = "Bus stops, light rail and ferries near you. Leave empty to skip.",
-                icon = "route",
+            schema.Generated(
+                id = "stop_picker4",
+                source = "home",
                 handler = stops4,
             ),
             schema.Generated(
@@ -1161,11 +1184,9 @@ def get_schema():
                 source = "stop4",
                 handler = direction_field_4,
             ),
-            schema.LocationBased(
-                id = "stop5",
-                name = "Stop 5",
-                desc = "Bus stops, light rail and ferries near you. Leave empty to skip.",
-                icon = "route",
+            schema.Generated(
+                id = "stop_picker5",
+                source = "home",
                 handler = stops5,
             ),
             schema.Generated(
@@ -1173,11 +1194,9 @@ def get_schema():
                 source = "stop5",
                 handler = direction_field_5,
             ),
-            schema.LocationBased(
-                id = "stop6",
-                name = "Stop 6",
-                desc = "Bus stops, light rail and ferries near you. Leave empty to skip.",
-                icon = "route",
+            schema.Generated(
+                id = "stop_picker6",
+                source = "home",
                 handler = stops6,
             ),
             schema.Generated(

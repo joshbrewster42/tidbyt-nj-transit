@@ -100,7 +100,27 @@ ferry there is one code and the direction filters departures instead.
 Two entries sharing a name *and* a heading are the feed listing one place
 twice; the nearer one wins.
 
-### Why every picker is declared statically
+### One address, six dropdowns
+
+Configuration is a single `schema.Location` followed by six stop slots. Each
+slot is a `schema.Generated` sourced from that address, returning a dropdown of
+nearby stops, nearest first. A seventh generated field per slot supplies the
+direction picker, sourced from the slot's own dropdown — generated fields chain
+fine.
+
+An earlier version gave each slot its own `schema.LocationBased`, which meant
+**six separate address pickers** and typing the same address six times.
+
+Two pixlet rules shape this, both discovered by schema validation rejecting the
+handler at runtime rather than at load:
+
+- **A dropdown option's value cannot be empty**, and a dropdown must carry a
+  default. `""` answers `Field validation for 'Value' failed on the 'required'
+  tag`. Hence the `SLOT_UNUSED` and `ALL_DIRECTIONS` sentinels — and hence
+  guarding every `json.decode` of those values, since a sentinel is not JSON.
+- **A generated field cannot carry a handler.** See below.
+
+### Why the stop pickers are dropdowns, not LocationBased
 
 Pixlet builds its handler table from the schema `get_schema()` returns, and
 keys each entry by field id. **A handler that only appears on a field returned
