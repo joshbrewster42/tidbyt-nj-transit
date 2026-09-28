@@ -88,6 +88,11 @@ LINES_PER_PAGE = 4
 DELAY_MS = 100
 PAGE_HOLD_MS = 4000
 
+# A live badge spends most of its cycle showing the route and briefly says
+# LIVE instead. At DELAY_MS per frame that is roughly 2.5s then 0.8s.
+LIVE_FLASH_ON = 8
+LIVE_FLASH_OFF = 25
+
 # Fetch more than fits, so filtering by destination still has something to
 # choose from. Only the soonest is shown, but the filter needs candidates.
 FETCH_LIMIT = 15
@@ -718,20 +723,29 @@ def wait_color(when, live):
 
 # tom-thumb glyphs are 3px wide with 1px of spacing.
 CHAR_W = 4
-WAIT_W = 13  # fits "now" and up to two digits plus the "m"
+WAIT_W = 13
+
+# "LIVE" needs four characters, wider than most route numbers, so a flashing
+# badge is widened to fit rather than letting the row jump about mid-cycle.
+LIVE_LABEL = "LIVE"
+LIVE_W = CHAR_W * 4 + 3  # fits "now" and up to two digits plus the "m"
 
 def fit_text(text, width):
-    """Cut text to what actually fits, then left-align it in that width.
+    """Show text in a fixed width, scrolling it when it does not fit.
 
     A Box centres its child, so text wider than the box overflows at both ends
     and you read its middle -- "Midtown / W. 39th St." shows up as
-    "wn / W. 39th". Trimming first, then padding the remainder, keeps every row
-    starting at the same column.
+    "wn / W. 39th". Short text is left-aligned by padding the remainder; long
+    text scrolls instead, so the whole name is readable eventually.
     """
-    room = width // CHAR_W
-    shown = text[:room] if len(text) > room else text
-    pad = width - CHAR_W * len(shown)
-    children = [render.Text(content = shown, font = FONT, color = COLOR_TEXT)]
+    if CHAR_W * len(text) > width:
+        return render.Marquee(
+            width = width,
+            child = render.Text(content = text, font = FONT, color = COLOR_TEXT),
+        )
+
+    pad = width - CHAR_W * len(text)
+    children = [render.Text(content = text, font = FONT, color = COLOR_TEXT)]
     if pad > 0:
         children.append(render.Box(width = pad, height = 7))
     return render.Row(children = children)
@@ -747,21 +761,34 @@ def watch_line(item):
     dep = item["dep"]
 
     if not dep:
-        return render.Row(
+        return (render.Row(
             cross_align = "center",
             children = [
                 render.Box(width = 3, height = 7, color = badge_color(stop, "")),
                 render.Box(width = 2, height = 7),
                 fit_text(item["err"] or "no service", 59),
             ],
-        )
+        ), False)
 
     route = dep["route"]
+    live = dep.get("live", False)
+
     badge_w = min(CHAR_W * len(route) + 3, 26) if route else 3
-    dest_w = 64 - badge_w - 1 - WAIT_W
+    if route and live:
+        badge_w = max(badge_w, LIVE_W)
+
+    # One pixel each side of the destination, or it collides with the
+    # countdown and reads as "New York10m".
+    dest_w = 64 - badge_w - 2 - WAIT_W
 
     color = badge_color(stop, route)
-    if route:
+    if not route:
+        # Ferries have no useful route name -- the route is its destination --
+        # so the badge shrinks to a plain colour stripe.
+        badge = render.Box(width = badge_w, height = 7, color = color)
+    elif live:
+        badge = live_badge(route, color, badge_w)
+    else:
         badge = render.Box(
             width = badge_w,
             height = 7,
@@ -772,28 +799,56 @@ def watch_line(item):
                 color = text_on(color),
             ),
         )
-    else:
-        # Ferries have no useful route name -- the route is its destination --
-        # so the badge shrinks to a plain colour stripe.
-        badge = render.Box(width = badge_w, height = 7, color = color)
 
-    return render.Row(
+    # A row moves if its destination is too long to sit still, or if its
+    # badge is flashing.
+    scrolls = CHAR_W * len(dep["dest"]) > dest_w
+    row = render.Row(
         cross_align = "center",
         children = [
             badge,
             render.Box(width = 1, height = 7),
             fit_text(dep["dest"], dest_w),
+            render.Box(width = 1, height = 7),
             render.Box(
                 width = WAIT_W,
                 height = 7,
                 child = render.Text(
                     content = _short_wait(dep["when"]),
                     font = FONT,
-                    color = wait_color(dep["when"], dep.get("live", False)),
+                    color = wait_color(dep["when"], live),
                 ),
             ),
         ],
     )
+    return (row, scrolls or live)
+
+def live_badge(route, color, width):
+    """A route badge that briefly says LIVE, for a vehicle being tracked.
+
+    Built as its own Animation. Sequence, which drives the paging, plays each
+    page's animations rather than freezing them, so this keeps cycling
+    alongside a scrolling destination.
+    """
+    on_route = render.Box(
+        width = width,
+        height = 7,
+        color = color,
+        child = render.Text(content = route, font = FONT, color = text_on(color)),
+    )
+    on_live = render.Box(
+        width = width,
+        height = 7,
+        color = COLOR_TEXT,
+        child = render.Text(content = LIVE_LABEL, font = FONT, color = "#000000"),
+    )
+
+    frames = []
+    for _ in range(LIVE_FLASH_OFF):
+        frames.append(on_route)
+    for _ in range(LIVE_FLASH_ON):
+        frames.append(on_live)
+    return render.Animation(children = frames)
 
 def _short_wait(when):
     """'12 min' -> '12'. The column is too narrow to spell it out."""
@@ -806,12 +861,15 @@ def _short_wait(when):
     return w[:5]
 
 def page_of(items):
-    """One screen: up to four watched stops, padded to a stable height."""
+    """One screen of watched stops, plus whether anything on it moves."""
     rows = []
+    animated = False
     for item in items:
-        rows.append(watch_line(item))
+        line, moves = watch_line(item)
+        rows.append(line)
         rows.append(render.Box(height = 1))
-    return render.Column(children = rows)
+        animated = animated or moves
+    return (render.Column(children = rows), animated)
 
 def message_screen(text):
     return render.Root(
@@ -927,23 +985,39 @@ def main(config):
     for start in range(0, len(items), LINES_PER_PAGE):
         pages.append(page_of(items[start:start + LINES_PER_PAGE]))
 
+    # Only a page with nothing moving needs padding out; wrapping one that
+    # does animate would freeze it.
+    pages = [page if animated else hold(page) for (page, animated) in pages]
+
     if len(pages) == 1:
-        return render.Root(delay = DELAY_MS, max_age = MAX_AGE, child = pages[0])
+        return render.Root(
+            delay = DELAY_MS,
+            max_age = MAX_AGE,
+            show_full_animation = True,
+            child = pages[0],
+        )
 
-    # render.Animation gives each child exactly one frame, so a page has to be
-    # repeated to stay up long enough to read.
-    frames = []
-    repeats = PAGE_HOLD_MS // DELAY_MS
-    for page in pages:
-        for _ in range(repeats):
-            frames.append(page)
-
+    # Sequence, not Animation. Animation treats every child as exactly one
+    # frame, which freezes any scrolling or flashing inside a page -- measured
+    # at 40 frames where the content needed 171. Sequence plays each child's
+    # own animation through before moving on.
     return render.Root(
         delay = DELAY_MS,
         max_age = MAX_AGE,
         show_full_animation = True,
-        child = render.Animation(children = frames),
+        child = render.Sequence(children = pages),
     )
+
+def hold(page):
+    """Keep a page up long enough to read even when nothing on it moves.
+
+    Sequence gives a child as many frames as it animates for, and a page of
+    static rows animates for exactly one. Repeating it supplies the duration.
+    """
+    frames = []
+    for _ in range(PAGE_HOLD_MS // DELAY_MS):
+        frames.append(page)
+    return render.Animation(children = frames)
 
 def stop_options(location, mode = ""):
     """Nearby stops, one option per direction of travel.
