@@ -1,9 +1,10 @@
 """
 Applet: NJ Transit Nearby
 Summary: Nearby NJT departures
-Description: Pick a spot on the map and see the next departures from the closest
-             NJ Transit bus stop or light rail station. Bus times are realtime
-             (GPS-based); light rail times come from the published timetable.
+Description: Watch up to six nearby stops at once - NJ Transit buses, light rail
+             and NY Waterway ferries - and see the next departure from each.
+             Bus times are realtime (GPS-based); light rail and ferry come from
+             published timetables.
 Author: Joshua J Brewster
 """
 
