@@ -69,8 +69,8 @@ TOKEN_TTL = 20 * 60 * 60  # refresh well before the ~24h expiry
 #   pixlet encrypt nj-departures '<your njtransit password>'
 #
 # Paste each result here, replacing the placeholders.
-NJT_USERNAME_ENC = "REPLACE_WITH_PIXLET_ENCRYPT_OUTPUT_USERNAME"
-NJT_PASSWORD_ENC = "REPLACE_WITH_PIXLET_ENCRYPT_OUTPUT_PASSWORD"
+NJT_USERNAME_ENC = "AV6+xWcESOn74adQJmtl09df+IAStv+tpiMzHwwAIwx94IuHMJEN0UxyTQe6vZiHKBgRZaKYDMMBKxumB+hvjz5gG6CqlkQqEFyz+NHWE+bFtouRun0ddbVPZj1w5cu19IA41qCMFXLDyXZlzEFaY4cllY0="
+NJT_PASSWORD_ENC = "AV6+xWcEfFCBU16YmTHaKCz4FCMhs3TzRKkU9qo0iaeh+HKVkgfOwc/UvS/5wqn08YM2slnMjVcn/dcq6WUbQ4qMsKVmwzNbAlq9MUFN+85JdCfUC6sUNxjSdKrOZUubl/eUlTjMqx+2ADLIjpITBHvNudCX"
 
 # ---------------------------------------------------------------------------
 # Display
