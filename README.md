@@ -412,17 +412,20 @@ To try it before either of those:
 
 ```bash
 python3 pipeline/make_dev_copy.py --live      # prompts, no echo
-DEVUI_APP=.dev/nj_transit_live.star python3 pipeline/devui.py
+DEVUI_APP=.dev/live/nj_transit_live.star python3 pipeline/devui.py
 ```
 
 That build talks to the real API with real credentials. `DEVUI_APP` also tells
 the dev UI not to rebuild or use the mock.
 
+It lives in its own directory because pixlet mis-resolves paths when several
+`.star` files share one, reporting `reading <other file>: file does not exist`.
+
 **It holds your password in plain text.** It is written to `.dev/`, which is
 gitignored, and chmod 600 — but delete it when you are done:
 
 ```bash
-rm .dev/nj_transit_live.star
+rm -rf .dev/live
 ```
 
 ---
