@@ -65,11 +65,22 @@ WAIT_CASES = [
     ("DUE", "now"),
 ]
 
+# Hue must still carry urgency after brightness starts carrying confidence:
+# a scheduled departure three minutes out has to stay red, just dimmer.
+COLOUR_CASES = [
+    ("2 min", True, "COLOR_SOON"),
+    ("2 min", False, "COLOR_SOON_SCHEDULED"),
+    ("now", False, "COLOR_SOON_SCHEDULED"),
+    ("20 min", True, "COLOR_OK"),
+    ("20 min", False, "COLOR_OK_SCHEDULED"),
+]
+
 TEST_MAIN = '''
 
 CASES = %s
 WAITS = %s
 HEADERS = %s
+COLOURS = %s
 
 def main(config):
     bad = 0
@@ -78,6 +89,15 @@ def main(config):
         if got != c[2]:
             bad += 1
             print("FAIL match: " + c[0] + " vs " + c[1] + " -> " + str(got))
+    palette = {"COLOR_SOON": COLOR_SOON, "COLOR_SOON_SCHEDULED": COLOR_SOON_SCHEDULED,
+               "COLOR_OK": COLOR_OK, "COLOR_OK_SCHEDULED": COLOR_OK_SCHEDULED}
+    for c in COLOURS:
+        got = wait_color(c[0], c[1])
+        want = palette[c[2]]
+        if got != want:
+            bad += 1
+            print("FAIL colour: " + c[0] + " live=" + str(c[1]) + " -> " + got +
+                  " (want " + c[2] + " " + want + ")")
     for h in HEADERS:
         got = clean_bus_dest(h[0], h[1])
         if got != h[2]:
@@ -156,7 +176,8 @@ def main():
     src = src.replace("def main(config):", "def _app_main(config):", 1)
     src += TEST_MAIN % (repr(MATCH_CASES).replace("(", "[").replace(")", "]"),
                         repr(WAIT_CASES).replace("(", "[").replace(")", "]"),
-                        repr(HEADER_CASES).replace("(", "[").replace(")", "]"))
+                        repr(HEADER_CASES).replace("(", "[").replace(")", "]"),
+                        repr(COLOUR_CASES).replace("(", "[").replace(")", "]"))
 
     with tempfile.TemporaryDirectory() as tmp:
         # pixlet gets confused when several .star files share a directory.
@@ -183,7 +204,7 @@ def main():
 
     failures = int(found.group(1)) + label_failures
     total = (len(MATCH_CASES) + len(WAIT_CASES) + len(LABEL_CASES)
-             + len(HEADER_CASES) + 4)
+             + len(HEADER_CASES) + len(COLOUR_CASES) + 4)
     if failures:
         sys.exit("\n%d of %d assertions failed." % (failures, total))
     print("All %d assertions passed." % total)

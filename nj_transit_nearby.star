@@ -109,6 +109,13 @@ COLOR_TEXT = "#ffffff"
 COLOR_SOON = "#ff5656"
 COLOR_OK = "#4ade80"
 
+# Hue carries urgency, brightness carries confidence. A dimmed countdown is a
+# timetable time; a bright one is a vehicle actually being tracked. Keeping
+# them on separate channels means a scheduled departure three minutes out can
+# still go red.
+COLOR_SOON_SCHEDULED = "#99302f"
+COLOR_OK_SCHEDULED = "#2b7a4b"
+
 FONT = "tom-thumb"
 
 # Leading badges for the stop picker. Every entry gets one, including buses:
@@ -693,14 +700,21 @@ def _leading_digits(s):
             break
     return out
 
-def wait_color(when):
-    """Red when you need to run, green when you have time."""
-    if when.lower() in ("now", "due", "arriving"):
-        return COLOR_SOON
-    digits = _leading_digits(when)
-    if digits and int(digits) <= 3:
-        return COLOR_SOON
-    return COLOR_OK
+def wait_color(when, live):
+    """Red when you need to run, green when you have time.
+
+    Dimmed when the time came from a timetable rather than a vehicle being
+    tracked -- which is every light rail and ferry departure, since neither
+    publishes realtime this app can read, and any bus not transmitting.
+    """
+    soon = when.lower() in ("now", "due", "arriving")
+    if not soon:
+        digits = _leading_digits(when)
+        soon = digits != "" and int(digits) <= 3
+
+    if soon:
+        return COLOR_SOON if live else COLOR_SOON_SCHEDULED
+    return COLOR_OK if live else COLOR_OK_SCHEDULED
 
 # tom-thumb glyphs are 3px wide with 1px of spacing.
 CHAR_W = 4
@@ -775,7 +789,7 @@ def watch_line(item):
                 child = render.Text(
                     content = _short_wait(dep["when"]),
                     font = FONT,
-                    color = wait_color(dep["when"]),
+                    color = wait_color(dep["when"], dep.get("live", False)),
                 ),
             ),
         ],
