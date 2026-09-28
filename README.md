@@ -400,6 +400,40 @@ python3 pipeline/check_credentials.py 21923
 Credentials are prompted for without echo, never written to disk, and the
 session token is redacted from every line.
 
+## Putting it on a device
+
+`pixlet push` renders **on this machine** and uploads a still image. Two
+consequences:
+
+- `secret.decrypt()` does not work here, so pushing the committed app shows
+  `no api key` for bus. Real bus data needs a build with real credentials.
+- the app sets `max_age`, so the device stops displaying a pushed image once
+  it goes stale. A single push blanks after a couple of minutes.
+
+So pushing means pushing repeatedly:
+
+```bash
+pixlet login                                    # once
+python3 pipeline/push_to_device.py --list       # find your device ID
+python3 pipeline/push_to_device.py --device ABC123 \
+    'stop1={"c":"21923","m":"b","d":["New York"]}' \
+    'stop2={"c":"11","m":"f","d":["Midtown / W. 39th St."]}'
+```
+
+It prompts for credentials once and keeps them in memory, writing the
+credentialled build to a private temp directory at mode 600 and deleting it on
+exit, Ctrl-C included. `--every` sets the interval (default 60s, and it must
+stay under `MAX_AGE`), `--once` pushes a single frame.
+
+The dev UI prints the exact config values for whatever you have selected, under
+the preview.
+
+**This only runs while your machine does.** For a display that keeps working on
+its own, publish the app: on Tidbyt's servers the encrypted credentials decrypt
+and none of the above applies.
+
+---
+
 ## Seeing real bus data before publishing
 
 `secret.decrypt()` only works inside Tidbyt's cloud, so an encrypted credential

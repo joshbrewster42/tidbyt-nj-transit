@@ -244,6 +244,11 @@ PAGE = """<!DOCTYPE html>
   .err { color: #ff8787; font-size: 13px; padding: 14px 15px;
          white-space: pre-wrap; font-family: ui-monospace, monospace; }
   .empty { color: var(--dim); padding: 14px 15px; font-size: 14px; }
+  .cfg { padding: 11px 15px; border-top: 1px solid var(--line);
+         font-family: ui-monospace, monospace; font-size: 11px;
+         color: var(--dim); white-space: pre-wrap; word-break: break-all;
+         user-select: all; cursor: text; }
+  .cfg b { color: var(--text); font-weight: 400; }
   .coords { color: var(--dim); font-size: 12px; padding: 0 15px 12px;
             font-variant-numeric: tabular-nums; }
   .chips { padding: 12px 15px; display: flex; flex-wrap: wrap; gap: 7px; }
@@ -432,6 +437,10 @@ async function draw() {
     const pages = Math.ceil(watching.length / 4);
     $('out').innerHTML = card('Tidbyt preview',
       `<div class="preview"><img src="${url}" alt="preview"></div>` +
+      `<div class="cfg"><b>push these to a device:</b>\n` +
+      watching.map((w, i) => "  '" + esc('stop' + (i+1) + '=' + JSON.stringify(
+          {c: w.stop.c, m: w.stop.m, d: w.stop.d || []})) + "'").join(' \\\n') +
+      `</div>` +
       `<div class="live">
          <span class="dot ${live ? 'on' : ''}"></span>
          <label><input type="checkbox" ${live ? 'checked' : ''}
