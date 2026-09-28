@@ -34,7 +34,12 @@ import mock_server  # noqa: E402  (same directory)
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA = os.path.join(ROOT, "data", "v1")
 APP = os.path.join(ROOT, "nj_transit_nearby.star")
-DEV_APP = os.path.join(ROOT, ".dev", "nj_transit_dev.star")
+# DEVUI_APP points the preview at a different build -- in practice the
+# --live copy, which uses real credentials against the real API. When it is
+# set, the mock-backed copy is neither rebuilt nor used.
+DEV_APP = os.environ.get("DEVUI_APP") or os.path.join(ROOT, ".dev", "nj_transit_dev.star")
+DEV_APP = os.path.abspath(DEV_APP)
+USING_OVERRIDE = bool(os.environ.get("DEVUI_APP"))
 MAKE_DEV_COPY = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                              "make_dev_copy.py")
 
@@ -145,7 +150,9 @@ def refresh_dev_copy():
     That is an excellent way to spend an afternoon debugging a fix that has
     already landed.
     """
-    if not os.path.exists(APP):
+    if USING_OVERRIDE or not os.path.exists(APP):
+        # An overridden build is the caller's to manage; regenerating it would
+        # throw away whatever made it special, credentials included.
         return
     if (os.path.exists(DEV_APP)
             and os.path.getmtime(DEV_APP) >= os.path.getmtime(APP)):
@@ -565,7 +572,11 @@ def main():
     print("Mock NJ Transit API on http://127.0.0.1:%d" % mock_server.PORT,
           file=sys.stderr)
 
-    check_mock()
+    if USING_OVERRIDE:
+        print("  using %s (live build -- not rebuilt, mock unused)"
+              % os.path.relpath(DEV_APP, ROOT), file=sys.stderr)
+    else:
+        check_mock()
     print("Dev UI ready:  http://127.0.0.1:%d" % PORT, file=sys.stderr)
 
     HTTPServer(("127.0.0.1", PORT), Handler).serve_forever()

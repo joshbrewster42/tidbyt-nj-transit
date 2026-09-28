@@ -400,6 +400,33 @@ python3 pipeline/check_credentials.py 21923
 Credentials are prompted for without echo, never written to disk, and the
 session token is redacted from every line.
 
+## Seeing real bus data before publishing
+
+`secret.decrypt()` only works inside Tidbyt's cloud, so an encrypted credential
+cannot be exercised on a laptop. **`pixlet push` renders locally**, which means
+even pushing to a device shows `no api key` for bus. Encrypted credentials go
+live only when the app runs on Tidbyt's servers — via the community repo, or
+`pixlet private` on Tidbyt Plus.
+
+To try it before either of those:
+
+```bash
+python3 pipeline/make_dev_copy.py --live      # prompts, no echo
+DEVUI_APP=.dev/nj_transit_live.star python3 pipeline/devui.py
+```
+
+That build talks to the real API with real credentials. `DEVUI_APP` also tells
+the dev UI not to rebuild or use the mock.
+
+**It holds your password in plain text.** It is written to `.dev/`, which is
+gitignored, and chmod 600 — but delete it when you are done:
+
+```bash
+rm .dev/nj_transit_live.star
+```
+
+---
+
 ## Ferry
 
 NJ Transit runs no ferries — the Hudson crossings are **NY Waterway's**. They
@@ -525,6 +552,7 @@ and nothing is stored.
 |---|---|
 | `python3 pipeline/build_index.py` | Rebuild `data/v1/` from the GTFS feeds |
 | `python3 pipeline/make_dev_copy.py` | Regenerate `.dev/` copy by hand (devui does this automatically) |
+| `python3 pipeline/make_dev_copy.py --live` | Build a local copy using real credentials (see below) |
 | `python3 pipeline/devui.py` | Address-search dev UI + mock API |
 | `python3 pipeline/geocode.py --stops ADDR` | Coordinates and nearby stops for an address |
 | `python3 pipeline/run_tests.py` | Assertions for the destination matcher and helpers |

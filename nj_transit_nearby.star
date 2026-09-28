@@ -4,7 +4,7 @@ Summary: Nearby NJT departures
 Description: Pick a spot on the map and see the next departures from the closest
              NJ Transit bus stop or light rail station. Bus times are realtime
              (GPS-based); light rail times come from the published timetable.
-Author: joshbrewster42
+Author: Joshua J Brewster
 """
 
 load("cache.star", "cache")
@@ -64,8 +64,8 @@ TOKEN_TTL = 20 * 60 * 60  # refresh well before the ~24h expiry
 #   pixlet encrypt nj-transit-nearby '<your njtransit password>'
 #
 # Paste each result here, replacing the placeholders.
-NJT_USERNAME_ENC = "REPLACE_WITH_PIXLET_ENCRYPT_OUTPUT_USERNAME"
-NJT_PASSWORD_ENC = "REPLACE_WITH_PIXLET_ENCRYPT_OUTPUT_PASSWORD"
+NJT_USERNAME_ENC = "AV6+xWcEIseH4+5a2PBxMK0Z11yOxEPLynj4wG140BqlxQz8DR19NkkhorlMf7zGhpwbYFGgRg/HL5gdiXxsxNAcxR8ZcCncKpIlAVSZxadndE9ru0+H9UqcBCOtRcTp0Ffh6n/NooWq3pet6U9S3Uui8tU="
+NJT_PASSWORD_ENC = "AV6+xWcEy4KTp+3FyLrsRADM8mxB3JtHNKBGRLbjIlFfxOLktn46TK05Q+diHge4j3H7wz4KGI0BqUowgETD75X4KjMu6EduAaVfPc9/+c8oI6i4lfrM+Ple2VHRoRv0FDiSQW3jty1v1tPCQG4BNNEbutlX"
 
 # ---------------------------------------------------------------------------
 # Display
