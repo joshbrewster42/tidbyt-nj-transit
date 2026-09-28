@@ -33,11 +33,11 @@ import mock_server  # noqa: E402  (same directory)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA = os.path.join(ROOT, "data", "v1")
-APP = os.path.join(ROOT, "nj_transit_nearby.star")
+APP = os.path.join(ROOT, "nj_departures.star")
 # DEVUI_APP points the preview at a different build -- in practice the
 # --live copy, which uses real credentials against the real API. When it is
 # set, the mock-backed copy is neither rebuilt nor used.
-DEV_APP = os.environ.get("DEVUI_APP") or os.path.join(ROOT, ".dev", "nj_transit_dev.star")
+DEV_APP = os.environ.get("DEVUI_APP") or os.path.join(ROOT, ".dev", "nj_departures_dev.star")
 DEV_APP = os.path.abspath(DEV_APP)
 USING_OVERRIDE = bool(os.environ.get("DEVUI_APP"))
 MAKE_DEV_COPY = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -163,7 +163,7 @@ def refresh_dev_copy():
     if proc.returncode != 0:
         raise RuntimeError("could not refresh the dev copy:\n"
                            + (proc.stderr or proc.stdout).strip())
-    print("  dev copy rebuilt from nj_transit_nearby.star", file=sys.stderr)
+    print("  dev copy rebuilt from nj_departures.star", file=sys.stderr)
 
 
 def render_slots(slots):
@@ -196,7 +196,7 @@ PAGE = """<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>NJ Transit Nearby — dev</title>
+<title>NJ Departures — dev</title>
 <style>
   :root {
     --bg: #11151c; --panel: #1a212b; --line: #2c3644;
@@ -280,7 +280,7 @@ PAGE = """<!DOCTYPE html>
 </head>
 <body>
 <div class="wrap">
-  <h1>NJ Transit Nearby</h1>
+  <h1>NJ Departures</h1>
   <div class="sub">Local preview. Type an address the way you actually would.</div>
 
   <input type="search" id="q" placeholder="e.g. 1 Hudson Place, Hoboken NJ"

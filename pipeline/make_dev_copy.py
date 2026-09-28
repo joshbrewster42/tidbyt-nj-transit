@@ -9,7 +9,7 @@ rewrites those three seams to point at pipeline/mock_server.py.
 
     python3 pipeline/mock_server.py &
     python3 pipeline/make_dev_copy.py
-    pixlet serve .dev/nj_transit_dev.star
+    pixlet serve .dev/nj_departures_dev.star
 
 The copy lands in .dev/ (gitignored) so the real app file is never edited with
 development-only values that could be committed by accident.
@@ -23,13 +23,13 @@ import stat
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-SRC = ROOT / "nj_transit_nearby.star"
+SRC = ROOT / "nj_departures.star"
 OUT_DIR = ROOT / ".dev"
-OUT = OUT_DIR / "nj_transit_dev.star"
+OUT = OUT_DIR / "nj_departures_dev.star"
 # Its own directory: pixlet mis-resolves paths when several .star files share
 # one, reporting "reading <other file>: file does not exist".
 LIVE_DIR = OUT_DIR / "live"
-LIVE_OUT = LIVE_DIR / "nj_transit_live.star"
+LIVE_OUT = LIVE_DIR / "nj_departures_live.star"
 
 MOCK = "http://127.0.0.1:8777"
 

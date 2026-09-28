@@ -28,7 +28,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import build_index
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-APP = ROOT / "nj_transit_nearby.star"
+APP = ROOT / "nj_departures.star"
 
 # (live feed wording, the destination the rider picked, should they match?)
 MATCH_CASES = [

@@ -35,7 +35,7 @@ import uuid
 
 BUS_API = "https://pcsdata.njtransit.com/api/BUSDV2"
 
-# What nj_transit_nearby.star reads out of a departure.
+# What nj_departures.star reads out of a departure.
 EXPECTED_TRIP_FIELDS = ["public_route", "header", "departuretime", "sched_dep_time"]
 EXPECTED_ENVELOPE = ["DVTrip"]
 

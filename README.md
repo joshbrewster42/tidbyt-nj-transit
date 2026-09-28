@@ -1,4 +1,4 @@
-# NJ Transit Nearby — a Tidbyt app
+# NJ Departures — a Tidbyt app
 
 Watch up to six stops — bus, light rail and ferry, in any mix — and see the
 next departure from each, in the order you chose them.
@@ -325,7 +325,7 @@ whenever schedules change).
 ### 2. Publish the data
 
 The app fetches its data over HTTP, so the generated files need a public URL.
-Push this repo to GitHub and point `DATA_BASE` in `nj_transit_nearby.star` at
+Push this repo to GitHub and point `DATA_BASE` in `nj_departures.star` at
 it:
 
 ```starlark
@@ -341,8 +341,8 @@ Register at <https://developer.njtransit.com/registration/>, then encrypt your
 credentials so they can be safely committed:
 
 ```bash
-pixlet encrypt nj-transit-nearby '<your username>'
-pixlet encrypt nj-transit-nearby '<your password>'
+pixlet encrypt nj-departures '<your username>'
+pixlet encrypt nj-departures '<your password>'
 ```
 
 Paste each result into `NJT_USERNAME_ENC` / `NJT_PASSWORD_ENC`. Only Tidbyt's
@@ -353,13 +353,13 @@ light rail still works fine during local development.
 ### 4. Run it
 
 ```bash
-pixlet serve nj_transit_nearby.star
+pixlet serve nj_departures.star
 ```
 
 Or render a specific stop without the config UI:
 
 ```bash
-pixlet render nj_transit_nearby.star \
+pixlet render nj_departures.star \
   stop='{"c":"38441","n":"2nd St","m":"l","r":["HBLR"]}' \
   --magnify 8 -o out.webp
 ```
@@ -446,7 +446,7 @@ To try it before either of those:
 
 ```bash
 python3 pipeline/make_dev_copy.py --live      # prompts, no echo
-DEVUI_APP=.dev/live/nj_transit_live.star python3 pipeline/devui.py
+DEVUI_APP=.dev/live/nj_departures_live.star python3 pipeline/devui.py
 ```
 
 That build talks to the real API with real credentials. `DEVUI_APP` also tells
@@ -595,4 +595,4 @@ and nothing is stored.
 | `python3 pipeline/run_tests.py` | Assertions for the destination matcher and helpers |
 | `python3 pipeline/check_credentials.py STOP` | Verify NJ Transit credentials and the live response shape |
 | Auto-refresh checkbox in the dev UI | Re-render every 30s, like the device does |
-| `pixlet check nj_transit_nearby.star` | Community-repo readiness |
+| `pixlet check nj_departures.star` | Community-repo readiness |

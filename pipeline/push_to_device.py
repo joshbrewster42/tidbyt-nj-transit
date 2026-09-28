@@ -39,7 +39,7 @@ import tempfile
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-APP = os.path.join(ROOT, "nj_transit_nearby.star")
+APP = os.path.join(ROOT, "nj_departures.star")
 
 SECRET_CALLS = ("    username = secret.decrypt(NJT_USERNAME_ENC)\n"
                 "    password = secret.decrypt(NJT_PASSWORD_ENC)")
@@ -102,7 +102,7 @@ def main():
                     help='config values, e.g. \'stop1={"c":"21923","m":"b","d":["New York"]}\'')
     ap.add_argument("--device", help="Tidbyt device ID (see --list)")
     ap.add_argument("--list", action="store_true", help="list your devices and exit")
-    ap.add_argument("--installation-id", default="njtransitnearby",
+    ap.add_argument("--installation-id", default="njdepartures",
                     help="keeps the app in the device's rotation under this id")
     ap.add_argument("--every", type=int, default=60,
                     help="seconds between pushes (default 60; must stay under "

@@ -1,6 +1,6 @@
 """
-Applet: NJ Transit Nearby
-Summary: Nearby NJT departures
+Applet: NJ Departures
+Summary: Nearby NJ departures
 Description: Watch up to six nearby stops at once - NJ Transit buses, light rail
              and NY Waterway ferries - and see the next departure from each.
              Bus times are realtime (GPS-based); light rail and ferry come from
@@ -65,12 +65,12 @@ TOKEN_TTL = 20 * 60 * 60  # refresh well before the ~24h expiry
 # key that reverses this, so these are safe to commit; secret.decrypt() returns
 # None when running locally, which the code below treats as "no realtime".
 #
-#   pixlet encrypt nj-transit-nearby '<your njtransit username>'
-#   pixlet encrypt nj-transit-nearby '<your njtransit password>'
+#   pixlet encrypt nj-departures '<your njtransit username>'
+#   pixlet encrypt nj-departures '<your njtransit password>'
 #
 # Paste each result here, replacing the placeholders.
-NJT_USERNAME_ENC = "AV6+xWcEIseH4+5a2PBxMK0Z11yOxEPLynj4wG140BqlxQz8DR19NkkhorlMf7zGhpwbYFGgRg/HL5gdiXxsxNAcxR8ZcCncKpIlAVSZxadndE9ru0+H9UqcBCOtRcTp0Ffh6n/NooWq3pet6U9S3Uui8tU="
-NJT_PASSWORD_ENC = "AV6+xWcEy4KTp+3FyLrsRADM8mxB3JtHNKBGRLbjIlFfxOLktn46TK05Q+diHge4j3H7wz4KGI0BqUowgETD75X4KjMu6EduAaVfPc9/+c8oI6i4lfrM+Ple2VHRoRv0FDiSQW3jty1v1tPCQG4BNNEbutlX"
+NJT_USERNAME_ENC = "REPLACE_WITH_PIXLET_ENCRYPT_OUTPUT_USERNAME"
+NJT_PASSWORD_ENC = "REPLACE_WITH_PIXLET_ENCRYPT_OUTPUT_PASSWORD"
 
 # ---------------------------------------------------------------------------
 # Display
