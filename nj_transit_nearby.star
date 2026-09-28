@@ -259,7 +259,7 @@ def bus_token():
     cache.set(TOKEN_CACHE_KEY, token, ttl_seconds = TOKEN_TTL)
     return token
 
-def bus_departures(stop_code):
+def bus_departures(stop_code, now):
     """Next buses from a stop, as a list of display rows.
 
     Returns (departures, error). The API returns both a realtime prediction and
@@ -301,14 +301,31 @@ def bus_departures(stop_code):
 
     out = []
     for t in trips:
+        route = _clean(t.get("public_route")) or "?"
+
+        # departuretime is a wall clock time -- "09:47 PM" -- not a countdown.
+        # Reading digits off the front of it would show "9m" for a bus twenty
+        # minutes away, so it has to be turned into minutes from now.
         predicted = _clean(t.get("departuretime"))
         scheduled = _clean(t.get("sched_dep_time"))
-        when = predicted or scheduled
-        if not when:
+
+        wait = minutes_until(predicted, now) if predicted else None
+        if wait == None and scheduled:
+            wait = minutes_until(scheduled, now)
+        if wait == None:
             continue
+
+        # departurestatus carries the operator's own wording, which is where a
+        # bus at the kerb says so rather than showing a countdown of zero.
+        status = _clean(t.get("departurestatus")).lower()
+        if wait <= 0 or status.find("due") >= 0 or status.find("arriv") >= 0:
+            when = "now"
+        else:
+            when = "%d min" % wait
+
         out.append({
-            "route": _clean(t.get("public_route")) or "?",
-            "dest": pretty_dest(_clean(t.get("header"))),
+            "route": route,
+            "dest": clean_bus_dest(_clean(t.get("header")), route),
             "when": when,
             "live": predicted != "",
         })
@@ -318,6 +335,65 @@ def bus_departures(stop_code):
     if not out:
         return [], "no departures"
     return out, None
+
+def minutes_until(text, now):
+    """Minutes from now to a clock time like "09:47 PM".
+
+    Also accepts the dated form the feed uses for scheduled times,
+    "09/27/2026 09:45:58 PM". Returns None when the text is not a time.
+    """
+    pieces = text.strip().split(" ")
+    if len(pieces) == 3:
+        pieces = pieces[1:]  # drop a leading date
+    if not pieces:
+        return None
+
+    parts = pieces[0].split(":")
+    if len(parts) < 2:
+        return None
+    if not parts[0].isdigit() or not parts[1].isdigit():
+        return None
+
+    hour = int(parts[0]) % 12
+    minute = int(parts[1])
+    if len(pieces) > 1 and pieces[1].upper() == "PM":
+        hour += 12
+
+    wait = (hour * 60 + minute) - (now.hour * 60 + now.minute)
+
+    # A departure shortly after midnight reads as far in the past. Anything
+    # more than two hours behind is tomorrow, not a bus that has left.
+    if wait < -120:
+        wait += 24 * 60
+    return wait
+
+def clean_bus_dest(header, route):
+    """'158 NEW YORK  VIA RIVER ROAD' -> 'New York'.
+
+    The live feed repeats the route number the badge already shows and appends
+    the routing, the same way GTFS headsigns do. Both are noise on a 64 pixel
+    row, and stripping them also makes the direction filter compare like with
+    like.
+    """
+    text = header.strip()
+
+    words = text.split(" ")
+    if words and route:
+        head = words[0].upper()
+        upper_route = route.upper()
+        if head == upper_route or (head.startswith(upper_route) and
+                                   head[len(route):].isalpha()):
+            text = " ".join(words[1:])
+
+    cut = text.upper().find(" VIA ")
+    if cut >= 0:
+        text = text[:cut]
+
+    # The feed doubles spaces where it drops a field.
+    for _ in range(4):
+        text = text.replace("  ", " ")
+
+    return pretty_dest(text.strip())
 
 def _clean(value):
     if value == None:
@@ -340,6 +416,24 @@ DEST_ABBREV = [
     ("Street", "St"),
 ]
 
+# Starlark's title() capitalises after a digit, turning "60TH" into "60Th".
+# Every ordinal that can follow a digit, put back.
+ORDINAL_FIXES = [
+    ["0Th", "0th"],
+    ["1Th", "1th"],
+    ["2Th", "2th"],
+    ["3Th", "3th"],
+    ["4Th", "4th"],
+    ["5Th", "5th"],
+    ["6Th", "6th"],
+    ["7Th", "7th"],
+    ["8Th", "8th"],
+    ["9Th", "9th"],
+    ["1St", "1st"],
+    ["2Nd", "2nd"],
+    ["3Rd", "3rd"],
+]
+
 def pretty_dest(text):
     """'NEWARK PENN STATION' -> 'Newark Penn Sta'.
 
@@ -349,6 +443,8 @@ def pretty_dest(text):
     if not text:
         return ""
     out = text.title()
+    for pair in ORDINAL_FIXES:
+        out = out.replace(pair[0], pair[1])
     for pair in DEST_ABBREV:
         out = out.replace(pair[0], pair[1])
     return out
@@ -762,7 +858,7 @@ def next_departures(slot, now, count):
     elif stop["m"] == "f":
         departures, err = scheduled_departures("fr", stop["c"], now)
     else:
-        departures, err = bus_departures(stop["c"])
+        departures, err = bus_departures(stop["c"], now)
 
     if err:
         return [{"stop": stop, "dep": None, "err": err}]

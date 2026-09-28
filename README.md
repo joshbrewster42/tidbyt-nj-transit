@@ -375,118 +375,30 @@ pixlet render nj_transit_nearby.star \
 - Light rail departures — real timetables, correct next-departure math
 - Rendering — light rail, River LINE colors, and the degraded no-credentials state
 
-**Partly verified** — `authenticateUser` has been exercised against the live
-server with deliberately invalid credentials. It exists, answers HTTP 200, and
-returns `{"Authenticated": "False", "UserToken": ...}` — the documented shape,
-and the keys `bus_token()` reads.
+**Verified against the live API** on 2026-09-27. Both endpoints answer as
+documented, and every field the app reads is present. Two *formats* were not
+what the published client libraries implied:
 
-**Not yet verified** — needs working credentials:
+| Field | Actual value | Assumption it broke |
+|---|---|---|
+| `departuretime` | `09:47 PM` | Read as a countdown — would show "9m" for a bus 20 minutes away |
+| `departurestatus` | `in 20 mins` | The countdown actually lives here |
+| `sched_dep_time` | `09/27/2026 09:45:58 PM` | Dated, not a duration |
+| `header` | `158 NEW YORK  VIA RIVER ROAD` | Repeats the route number and appends the routing |
 
-- `getBusDV`. The field names the app parses (`DVTrip`, `public_route`,
-  `header`, `departuretime`, `sched_dep_time`) come from published client
-  libraries, not from a response observed here. **Expect to adjust the parsing
-  once a real payload exists.**
+So departures are computed from the wall clock time rather than read off the
+front of it, and the header is stripped the same way GTFS headsigns are.
+`pipeline/mock_server.py` now emits these exact formats, so the dev UI tests
+the real shape rather than a convenient fiction.
 
-When credentials arrive:
+To check credentials or re-inspect the payload:
 
 ```bash
-export NJT_USERNAME='...'
 python3 pipeline/check_credentials.py 21923
 ```
 
-It calls the API exactly as the app does, reports whether each expected field
-is present, and prints one full departure. Credentials are prompted for without
-echo, never written to disk, and the session token is redacted from every line,
-so the output is safe to paste anywhere.
-
----
-
-## Direction of travel
-
-Almost every bus stop sits on one side of a street and serves a single
-direction: **13,614 of 16,564 bus stops are one-directional.** A street corner
-therefore appears in the picker as two stops with the same name and different
-stop codes, which is useless unless each says where its buses go. So the
-picker shows the heading:
-
-```
-Rt-9w (Sylvan Ave) at Clendinen Pl to New York          - 156, 186, 756 (0.2 mi)
-Rt-9w (Sylvan Ave) at Clendinen Pl to Englewood Cliffs  - 156, 186, 756 (0.2 mi)
-```
-
-Direction is a property of the stop, not a filter to apply afterwards. Picking
-the right side of the street is the whole job.
-
-The headings come from GTFS `direction_id`, which splits each route into its
-two directions of travel. One direction can still end at several terminals —
-the 159 outbound reaches Fort Lee, Cliffside Park and Fairview — so each
-direction is labelled with the place it heads toward, while keeping the full
-set of terminals to match departures against.
-
-**Labels are checked against NJ Transit's own naming.** MyBus offers exactly
-two directions per route, named by place
-(`selectdirection.jsp?route=159` → New York, Fort Lee), and the pipeline now
-agrees:
-
-| Route | MyBus | Pipeline |
-|---|---|---|
-| 156 | New York · Englewood Cliffs | New York · Englewood Cliffs |
-| 158 | New York · Fort Lee | New York · Fort Lee |
-| 159 | New York · Fort Lee | New York · Fort Lee |
-
-Getting there needed two rules. The busiest headsign is often too specific —
-the 159's is `Fort Lee Linwood Park` — so a name is trimmed back toward a
-plainer place. But trimming is only allowed down to a form that is *itself* a
-terminal somewhere in the network, and never below two words. Without the
-first rule `West New York` becomes `West New`; without the second,
-`Englewood Cliffs` becomes `Englewood`, which is a different town.
-
-A **Direction** dropdown appears only at stops that genuinely run both ways,
-which is where it earns its place. At the other 82% it would be a control with
-one meaningful choice, so it is hidden.
-
-Headsigns need heavy cleaning to get there. GTFS ships these as separate
-strings for what a rider calls one direction:
-
-```
-156  NEW YORK VIA PARK AVE
-156R NEW YORK VIA RIVER ROAD
-```
-
-Stripping the route code, the fare notice and the `VIA` qualifier collapses
-both to `New York`.
-
-**Matching is the fragile part.** Light rail destinations come from our own
-data and compare exactly. Bus destinations arrive live from the API and may be
-worded differently than the GTFS headsign they were derived from, so matching
-compares word by word against whichever description is shorter, expanding known
-abbreviations (`Sq`/`Square`, `Ctr`/`Center`). Generic prefix matching was tried
-first and rejected — it pairs "Newark" with "New York". See
-`pipeline/run_tests.py` for the cases this is pinned against.
-
-If a filter matches nothing, the display says `none to <destination>` rather
-than going blank, so a filter is never mistaken for an outage.
-
----
-
-## Refreshing
-
-A Tidbyt render is a still image with a fixed animation; it does not update
-itself. The device shows a fresh one because Tidbyt's backend re-runs the app
-on a cadence and pushes the result. Two settings shape that:
-
-- `ttl_seconds` on each HTTP call caps how stale the fetched data can be.
-  Realtime departures use 30s; the generated static files use a day.
-- `max_age` on `render.Root` bounds how long a render may be *displayed*. It is
-  set to 120s, because a countdown fails quietly: if the device loses
-  connectivity it keeps showing the last image, and a stale "3 min" is worse
-  than a blank screen because it is still believable.
-
-The dev UI's preview is a single render and stays put until you click. The
-**Auto-refresh** checkbox under the preview re-renders every 30s to approximate
-the device. Polling faster only re-serves cached data.
-
----
+Credentials are prompted for without echo, never written to disk, and the
+session token is redacted from every line.
 
 ## Ferry
 

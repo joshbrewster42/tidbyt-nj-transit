@@ -46,6 +46,17 @@ MATCH_CASES = [
     ("Paterson", "Passaic", False),
 ]
 
+# (live-feed header, its route, expected display) -- confirmed against a real
+# getBusDV response on 2026-09-27, which repeats the route number and appends
+# the routing after "VIA".
+HEADER_CASES = [
+    ("158 NEW YORK  VIA RIVER ROAD", "158", "New York"),
+    ("119 JERSEY CITY JOURNAL SQUARE", "119", "Jersey City Journal Square"),
+    ("126 HOBOKEN  VIA 2ND ST", "126", "Hoboken"),
+    ("159X NEW YORK 60TH STREET EXPRESS", "159", "New York 60th St Express"),
+    ("PORT IMPERIAL", "23", "Port Imperial"),
+]
+
 # (raw text, expected shortened form) for the countdown column.
 WAIT_CASES = [
     ("12 min", "12m"),
@@ -58,6 +69,7 @@ TEST_MAIN = '''
 
 CASES = %s
 WAITS = %s
+HEADERS = %s
 
 def main(config):
     bad = 0
@@ -66,6 +78,11 @@ def main(config):
         if got != c[2]:
             bad += 1
             print("FAIL match: " + c[0] + " vs " + c[1] + " -> " + str(got))
+    for h in HEADERS:
+        got = clean_bus_dest(h[0], h[1])
+        if got != h[2]:
+            bad += 1
+            print("FAIL header: " + h[0] + " -> " + got + " (want " + h[2] + ")")
     for w in WAITS:
         got = _short_wait(w[0])
         if got != w[1]:
@@ -138,7 +155,8 @@ def main():
     # rebinding a top-level name.
     src = src.replace("def main(config):", "def _app_main(config):", 1)
     src += TEST_MAIN % (repr(MATCH_CASES).replace("(", "[").replace(")", "]"),
-                        repr(WAIT_CASES).replace("(", "[").replace(")", "]"))
+                        repr(WAIT_CASES).replace("(", "[").replace(")", "]"),
+                        repr(HEADER_CASES).replace("(", "[").replace(")", "]"))
 
     with tempfile.TemporaryDirectory() as tmp:
         # pixlet gets confused when several .star files share a directory.
@@ -164,7 +182,8 @@ def main():
         sys.exit("Could not read test results.")
 
     failures = int(found.group(1)) + label_failures
-    total = len(MATCH_CASES) + len(WAIT_CASES) + len(LABEL_CASES) + 4
+    total = (len(MATCH_CASES) + len(WAIT_CASES) + len(LABEL_CASES)
+             + len(HEADER_CASES) + 4)
     if failures:
         sys.exit("\n%d of %d assertions failed." % (failures, total))
     print("All %d assertions passed." % total)

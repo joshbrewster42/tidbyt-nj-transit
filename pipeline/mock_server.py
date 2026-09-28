@@ -23,6 +23,7 @@ This mocks the response SHAPE as documented. It cannot confirm the real field
 names; only a live response can do that.
 """
 
+import datetime
 import json
 import os
 import random
@@ -41,6 +42,9 @@ DESTINATIONS = [
     "JERSEY CITY JOURNAL SQ",
     "HOBOKEN TERMINAL",
 ]
+
+# Routings the real feed appends after "VIA".
+VIAS = ["RIVER ROAD", "PARK AVE", "BERGENLINE AVE", "JOURNAL SQUARE"]
 
 _stop_routes_cache = {}
 _stop_dests_cache = {}
@@ -107,12 +111,27 @@ def make_departures(stop_code, seed=None):
         # Roughly one in five buses is not transmitting, so it falls back to
         # its scheduled time -- the same split the real feed shows.
         transmitting = rng.random() > 0.2
+
+        # Match the real payload's formats, confirmed against the live API on
+        # 2026-09-27. departuretime is a wall clock time, NOT a countdown; the
+        # countdown lives in departurestatus; sched_dep_time carries a date;
+        # and header repeats the route number and the routing.
+        when = datetime.datetime.now() + datetime.timedelta(minutes=minutes)
+        dest = rng.choice(dests).upper()
         trips.append({
             "public_route": route,
-            "header": rng.choice(dests).upper(),
-            "lanegate": "",
-            "departuretime": ("%d min" % minutes) if transmitting else "",
-            "sched_dep_time": "%d min" % minutes,
+            "header": "%s %s  VIA %s" % (route, dest, rng.choice(VIAS)),
+            "lanegate": "EMPTY",
+            "departuretime": when.strftime("%I:%M %p") if transmitting else "",
+            "departurestatus": "in %d mins" % minutes,
+            "remarks": "EMPTY",
+            "internal_trip_number": str(rng.randint(10000000, 99999999)),
+            "sched_dep_time": when.strftime("%m/%d/%Y %I:%M:%S %p"),
+            "timing_point_id": "EMPTY",
+            "message": None,
+            "fullscreen": "EMPTY",
+            "passload": rng.choice(["EMPTY", "HALF_EMPTY", "FULL"]),
+            "vehicle_id": str(rng.randint(10000, 29999)),
         })
     return trips
 
