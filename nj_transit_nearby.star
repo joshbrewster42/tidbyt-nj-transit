@@ -32,6 +32,10 @@ CELL_SIZE = 0.1  # must match CELL_SIZE in pipeline/build_index.py
 
 # Static data changes only when NJ Transit publishes a new booking, so cache it
 # hard. Realtime predictions obviously cannot be.
+# Both agencies publish Eastern times, so all arithmetic happens here rather
+# than wherever the device happens to be.
+AGENCY_TZ = "America/New_York"
+
 TTL_STATIC = 86400
 TTL_REALTIME = 30
 
@@ -875,8 +879,12 @@ def next_departures(slot, now, count):
     return out
 
 def main(config):
-    tz = config.get("$tz", "America/New_York")
-    now = time.now().in_location(tz)
+    # Every time this app compares against is published in the agency's own
+    # timezone: NJ Transit and NY Waterway both declare America/New_York in
+    # their GTFS. Using the device's timezone instead would put a Tidbyt
+    # outside Eastern hours out by exactly that offset -- countdowns wrong, and
+    # the service calendar looked up for the wrong day near midnight.
+    now = time.now().in_location(AGENCY_TZ)
 
     slots = configured_slots(config)
     if not slots:
