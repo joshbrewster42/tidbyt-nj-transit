@@ -11,6 +11,7 @@ Author: Joshua J Brewster
 load("cache.star", "cache")
 load("encoding/json.star", "json")
 load("http.star", "http")
+load("hash.star", "hash")
 load("math.star", "math")
 load("render.star", "render")
 load("schema.star", "schema")
@@ -61,14 +62,18 @@ BUS_API = "https://pcsdata.njtransit.com/api/BUSDV2"
 TOKEN_CACHE_KEY = "njt_bus_token_v1"
 TOKEN_TTL = 20 * 60 * 60  # refresh well before the ~24h expiry
 
-# Credentials, encrypted with `pixlet encrypt`. Only Tidbyt's servers hold the
-# key that reverses this, so these are safe to commit; secret.decrypt() returns
-# None when running locally, which the code below treats as "no realtime".
+# Fallback credentials, encrypted with `pixlet encrypt`. These are safe to
+# commit because only the holder of the matching private key can reverse them,
+# and that is Tidbyt's cloud; secret.decrypt() returns None everywhere else,
+# including local development and any self-hosted server.
 #
 #   pixlet encrypt nj-departures '<your njtransit username>'
 #   pixlet encrypt nj-departures '<your njtransit password>'
 #
-# Paste each result here, replacing the placeholders.
+# They are a fallback rather than the main path. Baking one account into the
+# app points every install in the world at the same NJ Transit account and its
+# rate limit, and it cannot work off Tidbyt's servers at all, so njt_user and
+# njt_pass in the config take priority. See njt_credentials().
 NJT_USERNAME_ENC = "AV6+xWcESOn74adQJmtl09df+IAStv+tpiMzHwwAIwx94IuHMJEN0UxyTQe6vZiHKBgRZaKYDMMBKxumB+hvjz5gG6CqlkQqEFyz+NHWE+bFtouRun0ddbVPZj1w5cu19IA41qCMFXLDyXZlzEFaY4cllY0="
 NJT_PASSWORD_ENC = "AV6+xWcEfFCBU16YmTHaKCz4FCMhs3TzRKkU9qo0iaeh+HKVkgfOwc/UvS/5wqn08YM2slnMjVcn/dcq6WUbQ4qMsKVmwzNbAlq9MUFN+85JdCfUC6sUNxjSdKrOZUubl/eUlTjMqx+2ADLIjpITBHvNudCX"
 
@@ -247,18 +252,57 @@ def guarantee_modes(scored, limit):
 # Realtime bus departures
 # ---------------------------------------------------------------------------
 
-def bus_token():
-    """A UserToken for the bus API, cached across renders."""
-    cached = cache.get(TOKEN_CACHE_KEY)
-    if cached:
-        return cached
+def njt_credentials(config):
+    """The NJ Transit developer login to authenticate with, or (None, None).
 
-    username = secret.decrypt(NJT_USERNAME_ENC)
-    password = secret.decrypt(NJT_PASSWORD_ENC)
+    Config is tried first so the app is not tied to one backend. Only the
+    operator holding the matching private key can reverse the ciphertext
+    below, and that operator is Tidbyt's cloud; on a self-hosted server
+    secret.decrypt() returns None no matter how sound the ciphertext is.
+    Registration is free, so a user there supplies their own account instead
+    of borrowing the one baked into the source.
+    """
+    username = config.str("njt_user", "").strip()
+    password = config.str("njt_pass", "").strip()
+    if username and password:
+        return username, password
+
+    # Nothing configured, so fall back to the built-in credentials. These
+    # resolve on Tidbyt's servers and nowhere else -- including local dev.
+    return secret.decrypt(NJT_USERNAME_ENC), secret.decrypt(NJT_PASSWORD_ENC)
+
+def token_cache_key(username):
+    """A cache key scoped to one account.
+
+    The cache is shared by every install of this app, so the single fixed key
+    this used to have would serve one user's token to another now that the
+    account can differ per user. The username is hashed to keep it out of the
+    key, not because the key is published anywhere.
+    """
+    return "%s_%s" % (TOKEN_CACHE_KEY, hash.sha256(username)[:16])
+
+def forget_bus_token(config):
+    """Drop the cached token so the next render authenticates again."""
+    username, _ = njt_credentials(config)
+    if username:
+        cache.set(token_cache_key(username), "", ttl_seconds = 1)
+
+def bus_token(config):
+    """A UserToken for the bus API, cached across renders.
+
+    Returns (token, error). Having no credentials and having wrong ones are
+    reported separately: both end up with no token, but one is solved by
+    filling in the config and the other by correcting it, and a row that says
+    the same thing either way sends you looking in the wrong place.
+    """
+    username, password = njt_credentials(config)
     if not username or not password:
-        # secret.decrypt returns None outside the Tidbyt cloud, which is the
-        # normal case when developing locally.
-        return None
+        return None, "add login"
+
+    cache_key = token_cache_key(username)
+    cached = cache.get(cache_key)
+    if cached:
+        return cached, None
 
     resp = http.post(
         "%s/authenticateUser" % BUS_API,
@@ -266,26 +310,28 @@ def bus_token():
         form_encoding = "application/x-www-form-urlencoded",
     )
     if resp.status_code != 200:
-        return None
+        return None, "api error"
 
     body = resp.json()
     token = body.get("UserToken")
     if not token or body.get("Authenticated") not in ("True", True, "true"):
-        return None
+        # The endpoint answers 200 with Authenticated false for a rejected
+        # login, so this is the only place a bad username or password shows up.
+        return None, "bad login"
 
-    cache.set(TOKEN_CACHE_KEY, token, ttl_seconds = TOKEN_TTL)
-    return token
+    cache.set(cache_key, token, ttl_seconds = TOKEN_TTL)
+    return token, None
 
-def bus_departures(stop_code, now):
+def bus_departures(stop_code, now, config):
     """Next buses from a stop, as a list of display rows.
 
     Returns (departures, error). The API returns both a realtime prediction and
     the scheduled time, so we prefer the prediction and fall back to schedule
     when a vehicle is not transmitting.
     """
-    token = bus_token()
+    token, err = bus_token(config)
     if not token:
-        return [], "no api key"
+        return [], err
 
     resp = http.post(
         "%s/getBusDV" % BUS_API,
@@ -309,7 +355,7 @@ def bus_departures(stop_code, now):
     if type(body) == "dict" and body.get("message"):
         msg = str(body.get("message")).lower()
         if "token" in msg or "auth" in msg:
-            cache.set(TOKEN_CACHE_KEY, "", ttl_seconds = 1)
+            forget_bus_token(config)
             return [], "auth expired"
 
     trips = body.get("DVTrip", []) if type(body) == "dict" else []
@@ -922,7 +968,7 @@ def configured_slots(config):
         out.append({"stop": unwrap_stop(raw)})
     return out
 
-def next_departures(slot, now, count):
+def next_departures(slot, now, count, config):
     """The soonest departures for one watched stop, after its direction filter.
 
     Asks for `count` because the screen holds four rows however many stops are
@@ -935,7 +981,7 @@ def next_departures(slot, now, count):
     elif stop["m"] == "f":
         departures, err = scheduled_departures("fr", stop["c"], now)
     else:
-        departures, err = bus_departures(stop["c"], now)
+        departures, err = bus_departures(stop["c"], now, config)
 
     if err:
         return [{"stop": stop, "dep": None, "err": err}]
@@ -967,7 +1013,7 @@ def main(config):
     if len(slots) >= LINES_PER_PAGE:
         # Every row is spoken for; one departure each, and page through them.
         for slot in slots:
-            items.extend(next_departures(slot, now, 1))
+            items.extend(next_departures(slot, now, 1, config))
     else:
         # Fewer stops than rows, so hand out the spare rows rather than
         # leaving the bottom of the screen black. Earlier slots get the
@@ -976,7 +1022,7 @@ def main(config):
         spare = LINES_PER_PAGE % len(slots)
         for i, slot in enumerate(slots):
             want = each + (1 if i < spare else 0)
-            got = next_departures(slot, now, want)
+            got = next_departures(slot, now, want, config)
 
             # A stop with nothing to show still only needs its one line; give
             # what it did not use back to the others.
@@ -1135,6 +1181,18 @@ def get_schema():
                 id = "stop_pickers",
                 source = "home",
                 handler = stop_fields,
+            ),
+            schema.Text(
+                id = "njt_user",
+                name = "NJ Transit username",
+                desc = "Free account from developer.njtransit.com. Live bus times need it; light rail does not.",
+                icon = "user",
+            ),
+            schema.Text(
+                id = "njt_pass",
+                name = "NJ Transit password",
+                desc = "Held by whichever server runs this app. Pixlet has no masked field, so it is typed in the clear.",
+                icon = "key",
             ),
         ],
     )
