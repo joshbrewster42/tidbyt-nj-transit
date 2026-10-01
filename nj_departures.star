@@ -107,6 +107,15 @@ FETCH_LIMIT = 15
 # feed is grouped by route, so the soonest departure can be well down the list.
 SCAN_LIMIT = 60
 
+# How long a schedule-only bus stays on screen past its time. A timetable
+# cannot know a bus is running late, so without this the row vanishes at its
+# scheduled minute while the rider is still at the stop waiting for the bus.
+# Realtime rows already behave this way -- an overdue tracked bus reads "now"
+# -- so this only brings schedule-only rows in line. The opposite error is
+# showing a bus that left on time, which is why the window is small: with no
+# vehicle to ask, "late" and "gone" are indistinguishable.
+SCHEDULE_GRACE = 3
+
 # Official NJ Transit route colors, from routes.txt in the GTFS feed.
 LINE_COLORS = {
     "HBLR": "#008080",
@@ -337,7 +346,7 @@ def bus_departures(stop_code, now, config):
     if not token:
         # Without credentials there is no realtime, but the timetable still
         # says when a bus is due. A scheduled time beats an error message.
-        scheduled, _ = scheduled_departures("bus", stop_code, now)
+        scheduled, _ = scheduled_departures("bus", stop_code, now, SCHEDULE_GRACE)
         if scheduled:
             return scheduled, None
         return [], err
@@ -430,7 +439,7 @@ def bus_departures(stop_code, now, config):
     # within a minute of that time, matched on the feed's own sched_dep_time
     # rather than its prediction -- the prediction moves, the schedule does
     # not -- so the same bus never appears twice.
-    scheduled, _ = scheduled_departures("bus", stop_code, now)
+    scheduled, _ = scheduled_departures("bus", stop_code, now, SCHEDULE_GRACE)
     for dep in scheduled:
         w = dep["wait"]
         seen = (covered.get("%s@%d" % (dep["route"], w)) or
@@ -559,7 +568,7 @@ def pretty_dest(text):
 # Scheduled light rail departures
 # ---------------------------------------------------------------------------
 
-def scheduled_departures(kind, stop_id, now):
+def scheduled_departures(kind, stop_id, now, grace = 0):
     """Next departures from a published timetable.
 
     Neither light rail nor NY Waterway's ferries publish realtime data, so both
@@ -592,7 +601,7 @@ def scheduled_departures(kind, stop_id, now):
         for svc in svc_list:
             for dep in table.get("svc", {}).get(svc, []):
                 mins = _hhmm_to_minutes(dep[0]) + offset
-                if mins == None or mins < now_min:
+                if mins == None or mins < now_min - grace:
                     continue
                 wait = mins - now_min
                 if wait > 180:  # nothing useful beyond three hours out
