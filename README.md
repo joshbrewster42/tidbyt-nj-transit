@@ -1,4 +1,4 @@
-# NJ Departures — a Tidbyt app
+# NJ Departures — a Tidbyt and Tronbyt app
 
 Watch up to six stops — bus, light rail and ferry, in any mix — and see the
 next departure from each, in the order you chose them.
@@ -147,54 +147,6 @@ The cost is a longer list, since a stop served both ways appears twice. The
 benefit is that every row says exactly where that vehicle goes, and choosing
 one is a single decision rather than two.
 
-### One entry per place, not per kerb
-
-A bus stop is a signpost on one side of the street, so a junction appears in
-the feed twice — same name, different stop codes, one per direction. A light
-rail platform and a ferry dock are single places where vehicles leave both
-ways, so they were already one entry with a direction dropdown.
-
-Buses now get the same shape. Same-name stops within 250 m collapse into one
-entry whose direction dropdown names each kerb:
-
-```
-Blvd East at 47/48th St to North Bergen / New York - 23, 128, 165, 166 (0.2 mi)
-    To New York     -> {"c":"21822"}
-    To North Bergen -> {"c":"21818"}
-```
-
-Near Port Imperial this took 25 list entries covering 18 distinct places down
-to 25 entries covering 25 places, with zero duplicates.
-
-The stop codes matter, which is why the group carries them: the realtime API is
-queried **per stop code**, so for a grouped bus stop the direction picker is
-choosing which code to ask, not filtering what comes back. For light rail and
-ferry there is one code and the direction filters departures instead.
-`resolve_stop_code` and `direction_filter` sort out which is which.
-
-Two entries sharing a name *and* a heading are the feed listing one place
-twice; the nearer one wins.
-
-### One address, six dropdowns
-
-Configuration is a single `schema.Location` followed by six stop slots. Each
-slot is a `schema.Generated` sourced from that address, returning a dropdown of
-nearby stops, nearest first. A seventh generated field per slot supplies the
-direction picker, sourced from the slot's own dropdown — generated fields chain
-fine.
-
-An earlier version gave each slot its own `schema.LocationBased`, which meant
-**six separate address pickers** and typing the same address six times.
-
-Two pixlet rules shape this, both discovered by schema validation rejecting the
-handler at runtime rather than at load:
-
-- **A dropdown option's value cannot be empty**, and a dropdown must carry a
-  default. `""` answers `Field validation for 'Value' failed on the 'required'
-  tag`. Hence the `SLOT_UNUSED` and `ALL_DIRECTIONS` sentinels — and hence
-  guarding every `json.decode` of those values, since a sentinel is not JSON.
-- **A generated field cannot carry a handler.** See below.
-
 ### Why the stop pickers are dropdowns, not LocationBased
 
 Pixlet builds its handler table from the schema `get_schema()` returns, and
@@ -218,34 +170,6 @@ So each slot declares its own `schema.LocationBased`, and the combined list
 leans on mode tags and `MODE_GUARANTEE` instead of a mode filter. Worth
 re-testing through `/api/v1/handlers/...` rather than a harness if this is ever
 revisited.
-
-### One entry per place, not per kerb
-
-A bus stop is a signpost on one side of the street, so a junction appears in
-the feed twice — same name, different stop codes, one per direction. A light
-rail platform and a ferry dock are single places where vehicles leave both
-ways, so they were already one entry with a direction dropdown.
-
-Buses now get the same shape. Same-name stops within 250 m collapse into one
-entry whose direction dropdown names each kerb:
-
-```
-Blvd East at 47/48th St to North Bergen / New York - 23, 128, 165, 166 (0.2 mi)
-    To New York     -> {"c":"21822"}
-    To North Bergen -> {"c":"21818"}
-```
-
-Near Port Imperial this took 25 list entries covering 18 distinct places down
-to 25 entries covering 25 places, with zero duplicates.
-
-The stop codes matter, which is why the group carries them: the realtime API is
-queried **per stop code**, so for a grouped bus stop the direction picker is
-choosing which code to ask, not filtering what comes back. For light rail and
-ferry there is one code and the direction filters departures instead.
-`resolve_stop_code` and `direction_filter` sort out which is which.
-
-Two entries sharing a name *and* a heading are the feed listing one place
-twice; the nearer one wins.
 
 ### Mode first, then the stop
 
@@ -337,18 +261,35 @@ the committed files directly.
 
 ### 3. Add your NJ Transit credentials
 
-Register at <https://developer.njtransit.com/registration/>, then encrypt your
-credentials so they can be safely committed:
+Register at <https://developer.njtransit.com/registration/>. There is no API
+key to copy: the bus endpoint authenticates with the account's own username
+and password and returns a token good for roughly a day.
+
+There are two ways to supply them, and the app prefers the first.
+
+**In the app config.** Fill in the "NJ Transit username" and "NJ Transit
+password" fields when configuring the app. This is the only method that works
+off Tidbyt's servers, and it keeps each install on its own account instead of
+funnelling every user in the world through one.
+
+**Encrypted into the source, as a fallback.**
 
 ```bash
 pixlet encrypt nj-departures '<your username>'
 pixlet encrypt nj-departures '<your password>'
 ```
 
-Paste each result into `NJT_USERNAME_ENC` / `NJT_PASSWORD_ENC`. Only Tidbyt's
-servers hold the key that reverses this. `secret.decrypt()` returns `None`
-locally, which the app treats as "no realtime" and shows a placeholder — so
-light rail still works fine during local development.
+Paste each result into `NJT_USERNAME_ENC` / `NJT_PASSWORD_ENC`. These are safe
+to commit because only the holder of the matching private key can reverse
+them — and that holder is Tidbyt's cloud. `secret.decrypt()` returns `None`
+during local development and on any self-hosted server no matter how sound the
+ciphertext is, so this path cannot be the only one. Note that `pixlet encrypt`
+binds a secret to the **app ID**: renaming the app invalidates both values.
+
+Whichever you use, the app distinguishes the two failure modes on screen —
+`add login` means no credentials were found, `bad login` means NJ Transit
+rejected them. Light rail needs no credentials at all; those timetables are
+static and unauthenticated.
 
 ### 4. Run it
 
@@ -374,6 +315,13 @@ pixlet render nj_departures.star \
 - Nearest-stop search — correct results and distances
 - Light rail departures — real timetables, correct next-departure math
 - Rendering — light rail, River LINE colors, and the degraded no-credentials state
+- **Realtime bus departures, end to end** — on 2026-10-01 the app authenticated
+  against the live API using credentials from the app config and rendered real
+  predictions, running on a self-hosted Tronbyt server
+
+`secret.decrypt()` itself has still **never executed**. It only runs on
+Tidbyt's servers, so nothing outside them can exercise it. The config path
+above is the one with live proof behind it.
 
 **Verified against the live API** on 2026-09-27. Both endpoints answer as
 documented, and every field the app reads is present. Two *formats* were not
@@ -399,6 +347,52 @@ python3 pipeline/check_credentials.py 21923
 
 Credentials are prompted for without echo, never written to disk, and the
 session token is redacted from every line.
+
+## Running on Tronbyt
+
+Tidbyt was acquired and its community app repo stopped merging pull requests,
+so [Tronbyt](https://github.com/tronbyt) picked the ecosystem up: a self-hosted
+server, replacement ESP32 firmware, a maintained pixlet fork, and a hard fork
+of the community apps repo.
+
+The app runs there with no code changes, but two things differ.
+
+**Credentials.** `secret.decrypt()` cannot work on a self-hosted server — the
+private key is Tidbyt's. Use the config fields instead; see step 3 above. Note
+that Tronbyt stores app config as plaintext JSON in its SQLite database, so the
+password is readable by anyone with access to the host. On a personal server
+that is the same trust boundary as the host itself, but it is worth knowing.
+
+**The stop dropdowns need an upstream fix.** Tronbyt's config UI gives the
+location field's wrapper `<div>` and its inner hidden input the same
+`schema_<id>`, so `getElementById` returns the div, `.value` is `undefined`,
+and a `schema.Generated` sourced from a location is handed an empty parameter.
+The dropdowns never appear. The server and this app are both fine — calling the
+handler endpoint directly returns all six fields.
+
+Filed as [tronbyt/server#937](https://github.com/tronbyt/server/issues/937).
+Until it lands, stop selections have to be written straight into the config:
+
+```bash
+docker run --rm -v tronbyt_data:/d python:3-alpine python3 -c "
+import sqlite3, json
+con = sqlite3.connect('/d/tronbyt.db')
+app_id, cfg = con.execute('select id, config from apps where name=?', ('nj_departures',)).fetchone()
+cfg = json.loads(cfg)
+cfg['stop1'] = json.dumps({'c': '21923', 'd': ['New York'], 'm': 'b'})
+con.execute('update apps set config=? where id=?', (json.dumps(cfg), app_id))
+con.commit()
+"
+```
+
+The `c` value is the stop code and `d` the list of headsigns to keep. Both come
+from the handler's option values, which `pixlet serve` will print locally:
+
+```bash
+curl -s -X POST 'http://127.0.0.1:8080/api/v1/handlers/stop_pickers$stop_fields' \
+  -H 'Content-Type: application/json' \
+  -d '{"param":"{\"lat\":40.78,\"lng\":-74.01}"}'
+```
 
 ## Putting it on a device
 
