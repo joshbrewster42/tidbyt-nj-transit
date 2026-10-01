@@ -10,8 +10,8 @@ Author: Joshua J Brewster
 
 load("cache.star", "cache")
 load("encoding/json.star", "json")
-load("http.star", "http")
 load("hash.star", "hash")
+load("http.star", "http")
 load("math.star", "math")
 load("render.star", "render")
 load("schema.star", "schema")
