@@ -12,8 +12,12 @@ HBLR Tonnelle     16m      ← light rail, official line colour
 
 Four fit on screen. Beyond that it pages, four seconds per page.
 
-Bus times are realtime (GPS-based). Light rail and ferry come from published
-timetables, because neither publishes a realtime feed this app can consume.
+Bus times are realtime (GPS-based), backed by the published timetable where
+that feed has gaps — it has been seen returning no bus at all for a route that
+both NJ Transit's own app and the timetable had. Light rail and ferry come from
+timetables alone, because neither publishes a realtime feed this app can
+consume. A row only shows the live marker when a vehicle is actually
+transmitting.
 
 ---
 
@@ -286,10 +290,11 @@ during local development and on any self-hosted server no matter how sound the
 ciphertext is, so this path cannot be the only one. Note that `pixlet encrypt`
 binds a secret to the **app ID**: renaming the app invalidates both values.
 
-Whichever you use, the app distinguishes the two failure modes on screen —
-`add login` means no credentials were found, `bad login` means NJ Transit
-rejected them. Light rail needs no credentials at all; those timetables are
-static and unauthenticated.
+Credentials are **optional**. Without them the app falls back to the bus
+timetable and shows scheduled times; you lose the live predictions and the live
+marker, not the departures. With them, `bad login` on a row means NJ Transit
+rejected the credentials rather than none being found. Light rail and ferry
+never need credentials.
 
 ### 4. Run it
 
@@ -318,6 +323,8 @@ pixlet render nj_departures.star \
 - **Realtime bus departures, end to end** — on 2026-10-01 the app authenticated
   against the live API using credentials from the app config and rendered real
   predictions, running on a self-hosted Tronbyt server
+- **Bus timetable fallback** — rendered four scheduled departures, including a
+  159 the realtime feed omits, with no credentials configured at all
 
 `secret.decrypt()` itself has still **never executed**. It only runs on
 Tidbyt's servers, so nothing outside them can exercise it. The config path
