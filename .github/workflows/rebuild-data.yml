@@ -1,0 +1,100 @@
+name: Rebuild timetable data
+
+# The timetables are static JSON served from this repo, so they only change
+# when this runs. NJ Transit revises schedules several times a year and the
+# calendars cover a fixed window -- roughly 180 days for bus and light rail --
+# so without a rebuild the data first drifts out of date and then expires,
+# after which light rail and ferry show "no service" and the bus fallback
+# stops filling gaps.
+
+on:
+  schedule:
+    # Sundays, 09:17 UTC. Off the hour because every cron on the hour queues
+    # behind everyone else's.
+    - cron: "17 9 * * 0"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: rebuild-data
+  cancel-in-progress: false
+
+jobs:
+  rebuild:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # The pipeline is stdlib-only, so there is nothing to install.
+      - name: Rebuild from the published feeds
+        run: python3 pipeline/build_index.py
+
+      - name: Refuse to publish data that is missing or expiring
+        run: |
+          python3 - <<'PY'
+          import json, sys, datetime
+
+          fail = []
+
+          # A feed can be fetched successfully and still be nearly empty, which
+          # would otherwise silently replace good data with nothing.
+          meta = json.load(open("data/v1/meta.json"))
+          counts = meta["counts"]
+          for key, floor in (("bus_stops", 15000), ("bus_timetables", 15000),
+                             ("light_rail_stops", 50), ("ferry_terminals", 10),
+                             ("cells", 100)):
+              got = counts.get(key, 0)
+              if got < floor:
+                  fail.append("%s = %d, expected at least %d" % (key, got, floor))
+
+          # Coverage has to extend past the next run, with room to spare. A
+          # calendar that stops inside this window means the upstream feed has
+          # gone stale and someone needs to look.
+          HORIZON = 30
+          today = datetime.date.today()
+          need = (today + datetime.timedelta(days=HORIZON)).strftime("%Y%m%d")
+          for kind in ("bus", "lr", "fr"):
+              cal = json.load(open("data/v1/%s/calendar.json" % kind))
+              if not cal:
+                  fail.append("%s calendar is empty" % kind)
+                  continue
+              if today.strftime("%Y%m%d") not in cal:
+                  fail.append("%s has no service today" % kind)
+              last = max(cal)
+              if last < need:
+                  fail.append("%s calendar ends %s, inside the %d-day horizon"
+                              % (kind, last, HORIZON))
+              print("%-4s %d dates, through %s" % (kind, len(cal), last))
+
+          if fail:
+              print("\nREFUSING TO COMMIT:")
+              for f in fail:
+                  print("  - " + f)
+              sys.exit(1)
+          print("\nchecks passed")
+          PY
+
+      - name: Commit
+        run: |
+          # meta.json carries a build timestamp, so there is always something
+          # to commit. That is deliberate: GitHub disables scheduled workflows
+          # in a repository with no activity for 60 days, and a weekly commit
+          # keeps this one alive even when the feeds have not changed.
+          CHANGED=$(git status --porcelain data/v1 | grep -v 'data/v1/meta.json' | wc -l | tr -d ' ')
+          git config user.name "Josh Brewster"
+          git config user.email "66533801+joshbrewster42@users.noreply.github.com"
+          git add data/v1
+          if [ "$CHANGED" = "0" ]; then
+            git commit -q -m "Rebuild timetable data (no changes from the feeds)"
+          else
+            git commit -q -m "Rebuild timetable data ($CHANGED files changed)"
+          fi
+          git push
+          echo "pushed: $(git log --oneline -1)"
