@@ -103,6 +103,10 @@ LIVE_FLASH_OFF = 25
 # choose from. Only the soonest is shown, but the filter needs candidates.
 FETCH_LIMIT = 15
 
+# How many trips to read before sorting. Higher than FETCH_LIMIT because the
+# feed is grouped by route, so the soonest departure can be well down the list.
+SCAN_LIMIT = 60
+
 # Official NJ Transit route colors, from routes.txt in the GTFS feed.
 LINE_COLORS = {
     "HBLR": "#008080",
@@ -391,13 +395,23 @@ def bus_departures(stop_code, now, config):
             "dest": clean_bus_dest(_clean(t.get("header")), route),
             "when": when,
             "live": predicted != "",
+            "wait": wait,
         })
-        if len(out) >= FETCH_LIMIT:
+        if len(out) >= SCAN_LIMIT:
             break
 
     if not out:
         return [], "no departures"
-    return out, None
+
+    # The feed groups by route rather than ordering by time: stop 21923 has
+    # returned a 158 at 6:10 PM ahead of a 159 at 6:01 PM. Taking it as given
+    # meant a sooner bus on a later-listed route could be pushed off the
+    # screen by a route that happened to come first, which is also why the
+    # scan limit is applied before this sort rather than after -- a busy stop
+    # returns 25 trips, and cutting at 15 in feed order could drop a whole
+    # route before it was ever compared.
+    out = sorted(out, key = lambda dep: dep["wait"])
+    return out[:FETCH_LIMIT], None
 
 def minutes_until(text, now):
     """Minutes from now to a clock time like "09:47 PM".
