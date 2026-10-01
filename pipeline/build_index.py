@@ -16,15 +16,20 @@ served over raw.githubusercontent.com:
     data/v1/cells/<lat>_<lon>.json   stops bucketed into 0.1-degree grid cells
     data/v1/lr/calendar.json         date -> active light rail service ids
     data/v1/lr/<stop_id>.json        light rail timetable for one stop
+    data/v1/bus/calendar.json        date -> active bus service ids
+    data/v1/bus/<stop_code>.json     bus timetable for one stop
 
 The grid cells are what make "find stops near my address" cheap. The app's
 schema.LocationBased handler converts a lat/lon into a cell key, fetches at
 most a handful of small files, and ranks by haversine distance -- instead of
 downloading an index of 16.5k stops.
 
-Bus departures come from the realtime API at render time, so bus stops only
-need geography here. Light rail has no comparable public realtime feed, so its
-timetables are precomputed -- only 65 stops, which stays small.
+Bus departures come from the realtime API at render time, but that feed's
+coverage is incomplete -- it has been seen omitting a bus entirely that both
+NJ Transit's own app and the published timetable had -- so bus timetables are
+precomputed too and used to fill the gaps. That is 16.5k stops and most of the
+output, though each file is small: a median stop is about 1.4 KB. Light rail
+and ferry have no public realtime feed at all, so theirs are the only source.
 
 Usage:
     python3 pipeline/build_index.py              # download feeds, build
@@ -245,6 +250,7 @@ def build_bus(zf):
             t["route_id"],
             t.get("direction_id", "0"),
             dest_label(t["trip_headsign"], route_name),
+            t.get("service_id", ""),
         )
 
     log("  bus: %d routes, %d trips" % (len(routes), len(trip_info)))
@@ -253,6 +259,14 @@ def build_bus(zf):
     # stop and, per direction of travel, how often each terminal appears.
     stop_routes = defaultdict(set)
     stop_dirs = defaultdict(lambda: defaultdict(Counter))
+
+    # Scheduled departures, gathered in the pass that is already streaming
+    # stop_times. The realtime feed is the primary source for bus, but its
+    # coverage is incomplete: on 2026-10-01 stop 21923 returned no imminent
+    # 159R at all, while NJ Transit's own app showed one six minutes out and
+    # this timetable had it at 17:01. Reading stop_times again to collect
+    # these would mean streaming 77 MB twice.
+    sched = defaultdict(lambda: defaultdict(list))
     seen = 0
     for st in read_csv(zf, "stop_times.txt"):
         seen += 1
@@ -260,12 +274,16 @@ def build_bus(zf):
             log("    ...%d stop_times rows" % seen)
         entry = trip_info.get(st["trip_id"])
         if entry:
-            rid, direction, dest = entry
+            rid, direction, dest, service = entry
             name = routes.get(rid)
             if name:
                 stop_routes[st["stop_id"]].add(name)
                 if dest:
                     stop_dirs[st["stop_id"]][direction][dest] += 1
+
+                dep = (st.get("departure_time") or "").strip()
+                if dep and dest and service:
+                    sched[st["stop_id"]][service].append((dep[:5], name, dest))
     log("  bus: scanned %d stop_times rows" % seen)
 
     # Seed the known-place set from every terminal in the feed, so labels can
@@ -278,6 +296,7 @@ def build_bus(zf):
 
     stops = []
     dests = {}
+    code_of = {}
     skipped_no_code = 0
     one_way = 0
     for s in read_csv(zf, "stops.txt"):
@@ -291,6 +310,7 @@ def build_bus(zf):
         served = stop_routes.get(s["stop_id"])
         if not served:
             continue
+        code_of[s["stop_id"]] = code
         try:
             lat, lon = float(s["stop_lat"]), float(s["stop_lon"])
         except (TypeError, ValueError):
@@ -318,7 +338,29 @@ def build_bus(zf):
 
     log("  bus: %d usable stops (%d skipped: no stop_code)" % (len(stops), skipped_no_code))
     log("  bus: %d of %d stops serve a single direction" % (one_way, len(stops)))
-    return stops, dests
+
+    # Same shape as the light rail and ferry tables, so one function in the app
+    # reads all three and only the directory differs. Keyed by stop_code, since
+    # that is the only identifier the app ever holds for a bus stop.
+    timetables = {}
+    for stop_id, by_service in sched.items():
+        code = code_of.get(stop_id)
+        if not code:
+            continue
+        heads = sorted({h for deps in by_service.values() for (_, _, h) in deps})
+        head_idx = {h: i for i, h in enumerate(heads)}
+        timetables[code] = {
+            "heads": heads,
+            "svc": {
+                svc: [[t, r, head_idx[h]] for (t, r, h) in sorted(deps)]
+                for svc, deps in by_service.items()
+            },
+        }
+
+    calendar = build_calendar(zf, {e[3] for e in trip_info.values() if e[3]})
+    log("  bus: %d timetables, %d service dates" % (len(timetables), len(calendar)))
+
+    return stops, dests, timetables, calendar
 
 
 # Operational detail that NJ Transit's own MyBus direction names leave off.
@@ -715,7 +757,7 @@ def main():
     ferry_zf = fetch_feed("ferry", FEEDS["ferry"], args.cache)
 
     log("Building bus stop geography...")
-    bus_stops, bus_dests = build_bus(bus_zf)
+    bus_stops, bus_dests, bus_timetables, bus_calendar = build_bus(bus_zf)
 
     log("Building light rail timetables...")
     lr_stops, timetables, calendar, lr_routes, lr_dests = build_light_rail(rail_zf)
@@ -762,6 +804,13 @@ def main():
         total_bytes += write_json(os.path.join(args.out, "fr", "%s.json" % sid), tt)
     total_bytes += write_json(os.path.join(args.out, "fr", "calendar.json"), fr_calendar)
 
+    # Bus timetables are only a fallback -- realtime is the primary source --
+    # but there are 16,564 of them, so this is the bulk of the output.
+    log("writing bus timetables (%d stops)" % len(bus_timetables))
+    for code, tt in bus_timetables.items():
+        total_bytes += write_json(os.path.join(args.out, "bus", "%s.json" % code), tt)
+    total_bytes += write_json(os.path.join(args.out, "bus", "calendar.json"), bus_calendar)
+
     meta = {
         "built": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "cell_size": CELL_SIZE,
@@ -772,6 +821,8 @@ def main():
             "cells": len(cells),
             "max_match_terminals": MAX_MATCH_TERMINALS,
             "service_dates": len(calendar),
+            "bus_timetables": len(bus_timetables),
+            "bus_service_dates": len(bus_calendar),
         },
         "light_rail_routes": {
             v["name"]: {"long": v["long"], "color": v["color"]}
@@ -787,7 +838,7 @@ def main():
     biggest = max(cells.items(), key=lambda kv: len(kv[1]))
     log("Densest cell %s holds %d stops." % (biggest[0], len(biggest[1])))
 
-    check_coverage({"light rail": calendar, "ferry": fr_calendar})
+    check_coverage({"light rail": calendar, "ferry": fr_calendar, "bus": bus_calendar})
 
 
 def check_coverage(calendars):

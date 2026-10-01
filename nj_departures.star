@@ -335,6 +335,11 @@ def bus_departures(stop_code, now, config):
     """
     token, err = bus_token(config)
     if not token:
+        # Without credentials there is no realtime, but the timetable still
+        # says when a bus is due. A scheduled time beats an error message.
+        scheduled, _ = scheduled_departures("bus", stop_code, now)
+        if scheduled:
+            return scheduled, None
         return [], err
 
     resp = http.post(
@@ -367,6 +372,7 @@ def bus_departures(stop_code, now, config):
         return [], "no departures"
 
     out = []
+    covered = {}
     for t in trips:
         route = _clean(t.get("public_route")) or "?"
 
@@ -376,11 +382,15 @@ def bus_departures(stop_code, now, config):
         predicted = _clean(t.get("departuretime"))
         scheduled = _clean(t.get("sched_dep_time"))
 
+        sched_wait = minutes_until(scheduled, now) if scheduled else None
+
         wait = minutes_until(predicted, now) if predicted else None
-        if wait == None and scheduled:
-            wait = minutes_until(scheduled, now)
+        if wait == None:
+            wait = sched_wait
         if wait == None:
             continue
+        if sched_wait != None:
+            covered["%s@%d" % (route, sched_wait)] = True
 
         # departurestatus carries the operator's own wording, which is where a
         # bus at the kerb says so rather than showing a countdown of zero.
@@ -410,6 +420,25 @@ def bus_departures(stop_code, now, config):
     # scan limit is applied before this sort rather than after -- a busy stop
     # returns 25 trips, and cutting at 15 in feed order could drop a whole
     # route before it was ever compared.
+    # The realtime feed's coverage is incomplete. On 2026-10-01 stop 21923
+    # returned no imminent 159R even when asked for route 159 specifically,
+    # while NJ Transit's own app showed one six minutes out and the published
+    # timetable had it. So anything the timetable knows about and realtime does
+    # not is added here, without a live marker.
+    #
+    # A scheduled departure is dropped when realtime already covers that route
+    # within a minute of that time, matched on the feed's own sched_dep_time
+    # rather than its prediction -- the prediction moves, the schedule does
+    # not -- so the same bus never appears twice.
+    scheduled, _ = scheduled_departures("bus", stop_code, now)
+    for dep in scheduled:
+        w = dep["wait"]
+        seen = (covered.get("%s@%d" % (dep["route"], w)) or
+                covered.get("%s@%d" % (dep["route"], w - 1)) or
+                covered.get("%s@%d" % (dep["route"], w + 1)))
+        if not seen:
+            out.append(dep)
+
     out = sorted(out, key = lambda dep: dep["wait"])
     return out[:FETCH_LIMIT], None
 
@@ -576,6 +605,7 @@ def scheduled_departures(kind, stop_id, now):
                     "dest": heads[idx] if idx < len(heads) else "",
                     "when": "%d min" % wait if wait > 0 else "now",
                     "live": False,
+                    "wait": wait,
                 })
 
     if not upcoming:
