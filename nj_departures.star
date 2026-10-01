@@ -1066,6 +1066,28 @@ def hold(page):
         frames.append(page)
     return render.Animation(children = frames)
 
+def decode_location(location):
+    """The source field's value as a dict, or None if it has not been set.
+
+    Tidbyt's config UI only calls a generated handler once its source field
+    holds a value, so this always used to be a populated address. Tronbyt's
+    server calls the handler as soon as the config page loads, which hands it
+    an empty string. Decoding that raises, the handler dies, and because these
+    dropdowns are the handler's only output, no stop can ever be picked.
+
+    The value also arrives wrapped in its own JSON envelope in some cases,
+    the same way a configured slot does -- see stop_configured().
+    """
+    if not location:
+        return None
+
+    decoded = json.decode(location)
+    if type(decoded) == "dict" and "value" in decoded and "lat" not in decoded:
+        decoded = json.decode(decoded["value"])
+    if type(decoded) != "dict" or "lat" not in decoded:
+        return None
+    return decoded
+
 def stop_options(location, mode = ""):
     """Nearby stops, one option per direction of travel.
 
@@ -1078,7 +1100,9 @@ def stop_options(location, mode = ""):
     This runs on Tidbyt's servers when someone configures the app, not on the
     device, so it can afford to download a grid cell and sort it.
     """
-    loc = json.decode(location)
+    loc = decode_location(location)
+    if not loc:
+        return []
     lat = float(loc["lat"])
     lon = float(loc["lng"])
 
@@ -1138,6 +1162,11 @@ def stop_fields(location):
     slot that appears. A handler may return several fields, which sidesteps
     that entirely and computes the nearby list once instead of six times.
     """
+    if not decode_location(location):
+        # No address yet. Returning no fields leaves the form showing just the
+        # location picker; the dropdowns appear once it is filled in.
+        return []
+
     options = [schema.Option(display = "Not used", value = SLOT_UNUSED)]
     options.extend(stop_options(location))
 
