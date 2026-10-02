@@ -885,7 +885,9 @@ def wait_color(when, live):
     tracked -- which is every light rail and ferry departure, since neither
     publishes realtime this app can read, and any bus not transmitting.
     """
-    soon = when.lower() in ("now", "due", "arriving")
+
+    # "+7" is a bus seven minutes late, which is as urgent as one due now.
+    soon = when.lower() in ("now", "due", "arriving") or when.startswith("+")
     if not soon:
         digits = _leading_digits(when)
         soon = digits != "" and int(digits) <= 3
@@ -987,9 +989,9 @@ def watch_line(item):
                 width = WAIT_W,
                 height = 7,
                 child = render.Text(
-                    content = _short_wait(dep["when"]),
+                    content = wait_label(dep),
                     font = FONT,
-                    color = wait_color(dep["when"], live),
+                    color = wait_color(wait_label(dep), live),
                 ),
             ),
         ],
@@ -1022,6 +1024,27 @@ def live_badge(route, color, width):
     for _ in range(LIVE_FLASH_ON):
         frames.append(on_live)
     return render.Animation(children = frames)
+
+def wait_label(dep):
+    """What goes in the countdown column, which is three characters wide.
+
+    A tracked bus past its scheduled time is late, not arriving. "+7" means
+    seven minutes behind, the way a departure board writes it, and that is
+    worth more than "now": the departure feed forgets these buses entirely,
+    so the scheduled time is all we have and it is already stale. Telling you
+    how stale is more honest than implying the bus is at the kerb.
+
+    Only for rows with a vehicle behind them. A schedule-only row that is
+    overdue has nothing to be late -- it may simply have gone -- so it keeps
+    reading "now" until its shorter window expires.
+    """
+    wait = dep.get("wait")
+    if dep.get("live") and wait != None and wait < 0:
+        late = -wait
+        if late > 99:
+            late = 99
+        return "+%d" % late
+    return _short_wait(dep["when"])
 
 def _short_wait(when):
     """'12 min' -> '12'. The column is too narrow to spell it out."""
