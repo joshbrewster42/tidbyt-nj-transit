@@ -30,6 +30,18 @@ load("time.star", "time")
 # Repoint this at your own fork if you regenerate the data.
 DATA_BASE = "https://raw.githubusercontent.com/joshbrewster42/tidbyt-nj-transit/main/data/v1"
 
+# Live-vehicle matching service (livefeed/ in this repo, running on Josh's own
+# box). The departure feed misses buses -- it returned no imminent 159R at stop
+# 21923 while NJ Transit's own app showed one -- and GTFS-Realtime knows about
+# them, but it is protobuf and pixlet cannot decode it. That service does the
+# decoding and the trip matching, and answers which scheduled departures have a
+# vehicle out there right now.
+#
+# Entirely optional: if it is unreachable the app loses the live marker on
+# those rows and nothing else. Set to "" to disable.
+LIVE_BASE = "https://tronbyt.brenstar.xyz/njt"
+TTL_LIVE = 20
+
 CELL_SIZE = 0.1  # must match CELL_SIZE in pipeline/build_index.py
 
 # Static data changes only when NJ Transit publishes a new booking, so cache it
@@ -335,6 +347,29 @@ def bus_token(config):
     cache.set(cache_key, token, ttl_seconds = TOKEN_TTL)
     return token, None
 
+def live_trips(stop_code):
+    """Scheduled departures at this stop that have a vehicle behind them.
+
+    Returns a list of {"r": route, "w": minutes}. Any failure is silent and
+    returns nothing: this only ever upgrades a row from scheduled to live, so
+    losing it costs a marker, not a departure.
+    """
+    if not LIVE_BASE:
+        return []
+
+    resp = http.get("%s/live/%s" % (LIVE_BASE, stop_code), ttl_seconds = TTL_LIVE)
+    if resp.status_code != 200:
+        return []
+
+    body = resp.json()
+    if type(body) != "dict":
+        return []
+    out = []
+    for row in body.get("live", []):
+        if type(row) == "dict" and row.get("r") != None and row.get("w") != None:
+            out.append({"r": row["r"], "w": int(row["w"])})
+    return out
+
 def bus_departures(stop_code, now, config):
     """Next buses from a stop, as a list of display rows.
 
@@ -447,6 +482,19 @@ def bus_departures(stop_code, now, config):
                 covered.get("%s@%d" % (dep["route"], w + 1)))
         if not seen:
             out.append(dep)
+
+    # A scheduled row whose trip currently has a vehicle is real, not a guess,
+    # so mark it live. Matched on route and minute because the service reports
+    # the scheduled time, which is what the timetable row holds too. Rows
+    # already live came from the realtime feed and are left alone.
+    tracked = live_trips(stop_code)
+    for dep in out:
+        if dep["live"]:
+            continue
+        for t in tracked:
+            if t["r"] == dep["route"] and t["w"] >= dep["wait"] - 1 and t["w"] <= dep["wait"] + 1:
+                dep["live"] = True
+                break
 
     out = sorted(out, key = lambda dep: dep["wait"])
     return out[:FETCH_LIMIT], None
