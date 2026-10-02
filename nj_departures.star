@@ -128,18 +128,24 @@ SCAN_LIMIT = 60
 # vehicle to ask, "late" and "gone" are indistinguishable.
 SCHEDULE_GRACE = 3
 
-# The same window for a row that has a vehicle behind it. Much longer, because
-# a tracked bus is evidence rather than a guess: the departure feed drops a
-# trip the moment its scheduled minute passes, so on 2026-10-02 the three
-# soonest buses at stop 21923 -- 5, 6 and 11 minutes overdue, all still
-# approaching -- were absent from it entirely while NJ Transit's own app listed
-# them as the next three.
+# The same window for a row that has a vehicle behind it. Longer, because a
+# tracked bus is evidence rather than a guess: the departure feed drops a trip
+# the moment its scheduled minute passes, so on 2026-10-02 the three soonest
+# buses at stop 21923 -- 5, 6 and 11 minutes overdue, all still approaching --
+# were absent from it entirely while NJ Transit's own app listed them as the
+# next three.
 #
-# The limit of this evidence: a matched vehicle proves the trip is still
+# Not longer still, though it easily could be: the screen holds four rows and
+# often fewer, so every late bus shown costs an upcoming one. The two mistakes
+# are not equal. A very late bus that turns up while you are at the stop is a
+# free win -- you get on it, having needed no warning. An on-time bus pushed
+# off the display is information you wanted and did not get. So the window is
+# cut where a late bus stops being likely enough to be worth a row.
+#
+# It is bounded for a second reason: a matched vehicle proves the trip is
 # running, not that it has yet to reach this stop. Without position along the
-# route the two are indistinguishable, so the window is bounded rather than
-# open-ended.
-LIVE_GRACE = 12
+# route those are indistinguishable.
+LIVE_GRACE = 10
 
 # Official NJ Transit route colors, from routes.txt in the GTFS feed.
 LINE_COLORS = {
