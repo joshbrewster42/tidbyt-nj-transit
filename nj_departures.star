@@ -128,6 +128,19 @@ SCAN_LIMIT = 60
 # vehicle to ask, "late" and "gone" are indistinguishable.
 SCHEDULE_GRACE = 3
 
+# The same window for a row that has a vehicle behind it. Much longer, because
+# a tracked bus is evidence rather than a guess: the departure feed drops a
+# trip the moment its scheduled minute passes, so on 2026-10-02 the three
+# soonest buses at stop 21923 -- 5, 6 and 11 minutes overdue, all still
+# approaching -- were absent from it entirely while NJ Transit's own app listed
+# them as the next three.
+#
+# The limit of this evidence: a matched vehicle proves the trip is still
+# running, not that it has yet to reach this stop. Without position along the
+# route the two are indistinguishable, so the window is bounded rather than
+# open-ended.
+LIVE_GRACE = 12
+
 # Official NJ Transit route colors, from routes.txt in the GTFS feed.
 LINE_COLORS = {
     "HBLR": "#008080",
@@ -381,6 +394,8 @@ def bus_departures(stop_code, now, config):
     if not token:
         # Without credentials there is no realtime, but the timetable still
         # says when a bus is due. A scheduled time beats an error message.
+        # No realtime here at all, so nothing can confirm a late bus: the
+        # tight window is the only honest one.
         scheduled, _ = scheduled_departures("bus", stop_code, now, SCHEDULE_GRACE)
         if scheduled:
             return scheduled, None
@@ -474,7 +489,7 @@ def bus_departures(stop_code, now, config):
     # within a minute of that time, matched on the feed's own sched_dep_time
     # rather than its prediction -- the prediction moves, the schedule does
     # not -- so the same bus never appears twice.
-    scheduled, _ = scheduled_departures("bus", stop_code, now, SCHEDULE_GRACE)
+    scheduled, _ = scheduled_departures("bus", stop_code, now, LIVE_GRACE)
     for dep in scheduled:
         w = dep["wait"]
         seen = (covered.get("%s@%d" % (dep["route"], w)) or
@@ -495,6 +510,16 @@ def bus_departures(stop_code, now, config):
             if t["r"] == dep["route"] and t["w"] >= dep["wait"] - 1 and t["w"] <= dep["wait"] + 1:
                 dep["live"] = True
                 break
+
+    # Everything overdue was pulled in above so that a tracked bus could be
+    # recognised. Now drop the overdue rows that nothing is backing: with no
+    # vehicle, a departure this far past its time is far more likely to have
+    # gone than to be running late.
+    kept = []
+    for dep in out:
+        if dep["live"] or dep["wait"] >= -SCHEDULE_GRACE:
+            kept.append(dep)
+    out = kept
 
     out = sorted(out, key = lambda dep: dep["wait"])
     return out[:FETCH_LIMIT], None

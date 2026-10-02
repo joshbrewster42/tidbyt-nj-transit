@@ -344,7 +344,13 @@ class Handler(BaseHTTPRequestHandler):
                 continue
             h, m = hhmm.split(":")
             wait = int(h) * 60 + int(m) - now_min
-            if -10 <= wait <= 180:
+            # Reaches well back because the whole point is late buses. BUSDV2
+            # forgets a trip once its scheduled minute passes, so the ones worth
+            # reporting are precisely those already overdue -- vehicle 24026 was
+            # 11 minutes late and still five minutes from arriving. The caller
+            # decides what to do with a negative wait; clipping it here loses
+            # the data entirely.
+            if -25 <= wait <= 180:
                 out.append({"t": hhmm, "r": route, "v": veh, "w": wait})
         out.sort(key=lambda d: d["w"])
         self._send(200, {"live": out, "age": round((now - at).total_seconds())})
