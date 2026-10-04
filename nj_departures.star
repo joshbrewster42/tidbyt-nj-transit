@@ -655,12 +655,27 @@ def scheduled_departures(kind, stop_id, now, grace = 0):
     difference is which directory they live in.
     """
     tt = http.get("%s/%s/%s.json" % (DATA_BASE, kind, stop_id), ttl_seconds = TTL_STATIC)
-    cal = http.get("%s/%s/calendar.json" % (DATA_BASE, kind), ttl_seconds = TTL_STATIC)
-    if tt.status_code != 200 or cal.status_code != 200:
+    if tt.status_code != 200:
         return [], "no data"
 
     table = tt.json()
-    calendar = cal.json()
+
+    # Light rail and ferry carry their calendar inside the timetable, so a stop
+    # is one fetch and the two can never disagree. They used to be separate
+    # files cached independently for a day, and NY Waterway renumbers its
+    # service ids on every publish: a rebuild left a stale timetable keyed by
+    # the old numbers beside a fresh calendar naming the new ones, the overlap
+    # came out empty, and the stop showed nothing until both expired. Weekly
+    # rebuilds made that a weekly outage.
+    #
+    # Bus still keeps a separate calendar. Repeating it across 16,564 stop
+    # files would cost tens of megabytes, and bus has realtime to fall back on.
+    calendar = table.get("cal")
+    if calendar == None:
+        cal = http.get("%s/%s/calendar.json" % (DATA_BASE, kind), ttl_seconds = TTL_STATIC)
+        if cal.status_code != 200:
+            return [], "no data"
+        calendar = cal.json()
 
     today = now.format("20060102")
     services = calendar.get(today, [])

@@ -458,6 +458,28 @@ def _route_sort_key(name):
     return (0 if name.isdigit() else 1, int(digits) if digits else 0, name)
 
 
+def calendar_for(calendar, services):
+    """The calendar entries that mention any of these services.
+
+    Inlined into each light rail and ferry timetable so a stop is one fetch
+    rather than two. The app caches every file independently for a day, and
+    these two must agree: NY Waterway renumbers its service ids on every
+    publish, so a rebuild leaves a stale timetable keyed by the old numbers
+    next to a fresh calendar naming the new ones. The overlap is then empty
+    and the stop shows nothing until both happen to expire.
+
+    Bus keeps its calendar in a separate file. Repeating it across 16,564 stop
+    files would add tens of megabytes, and bus has realtime to fall back on.
+    """
+    wanted = set(services)
+    out = {}
+    for date, active in calendar.items():
+        shared = [s for s in active if s in wanted]
+        if shared:
+            out[date] = shared
+    return out
+
+
 def build_calendar(zf, service_ids):
     """date -> active service ids, for either style of GTFS calendar.
 
@@ -612,7 +634,12 @@ def build_ferry(zf):
         svc_dep = {}
         for svc, deps in per_stop[sid].items():
             svc_dep[svc] = [[t, r, head_idx[h]] for (t, r, h) in sorted(deps)]
-        timetables[sid] = {"n": name, "heads": heads, "svc": svc_dep}
+        timetables[sid] = {
+            "n": name,
+            "heads": heads,
+            "svc": svc_dep,
+            "cal": calendar_for(calendar, svc_dep),
+        }
 
     log("  ferry: %d terminals with timetables" % len(stops))
     return stops, timetables, calendar, dests
@@ -728,6 +755,7 @@ def build_light_rail(zf):
             "n": name,
             "heads": heads,
             "svc": svc_dep,
+            "cal": calendar_for(calendar, svc_dep),
         }
 
     log("  light rail: %d stops with timetables" % len(stops))
