@@ -118,6 +118,11 @@ PAGE_HOLD_MS = 4000
 LIVE_FLASH_ON = 8
 LIVE_FLASH_OFF = 25
 
+# A bus at least this many minutes behind schedule flashes "+N" on its badge
+# in place of LIVE. Below it, a minute or two either way is ordinary jitter and
+# would light up half the board.
+LATE_SHOW = 3
+
 # Fetch more than fits, so filtering by destination still has something to
 # choose from. Only the soonest is shown, but the filter needs candidates.
 FETCH_LIMIT = 15
@@ -181,6 +186,10 @@ COLOR_OK = "#4ade80"
 # them on separate channels means a scheduled departure three minutes out can
 # still go red.
 COLOR_SOON_SCHEDULED = "#99302f"
+
+# Yellow, so a late badge reads differently from both the countdown's red and
+# green and the white LIVE flash.
+COLOR_LATE = "#facc15"
 COLOR_OK_SCHEDULED = "#2b7a4b"
 
 FONT = "tom-thumb"
@@ -488,6 +497,13 @@ def bus_departures(stop_code, now, config):
         if wait < -PASSED_GRACE:
             continue
 
+        # How far behind schedule, from the board's own prediction against
+        # its own scheduled time. Measured before the at-stop clamp below,
+        # which would otherwise read a very late bus at the kerb as on time.
+        late = 0
+        if predicted and sched_wait != None:
+            late = wait - sched_wait
+
         at_stop = (wait <= 0 or status.find("due") >= 0 or
                    status.find("arriv") >= 0 or status.find("aboard") >= 0 or
                    status.find("boarding") >= 0)
@@ -505,6 +521,7 @@ def bus_departures(stop_code, now, config):
             "when": when,
             "live": predicted != "",
             "wait": wait,
+            "late": late,
         })
         if len(out) >= SCAN_LIMIT:
             break
@@ -1016,6 +1033,8 @@ def watch_line(item):
         # Ferries have no useful route name -- the route is its destination --
         # so the badge shrinks to a plain colour stripe.
         badge = render.Box(width = badge_w, height = 7, color = color)
+    elif dep.get("late", 0) >= LATE_SHOW:
+        badge = late_badge(route, dep["late"], color, badge_w)
     elif live:
         badge = live_badge(route, color, badge_w)
     else:
@@ -1054,7 +1073,21 @@ def watch_line(item):
     return (row, scrolls or live)
 
 def live_badge(route, color, width):
-    """A route badge that briefly says LIVE, for a vehicle being tracked.
+    """A route badge that briefly says LIVE, for a vehicle being tracked."""
+    return flash_badge(route, color, width, LIVE_LABEL, COLOR_TEXT)
+
+def late_badge(route, late, color, width):
+    """A route badge that briefly says how late the bus is: "+9".
+
+    Takes LIVE's place rather than adding a second flash. Lateness comes from
+    a prediction, so a late bus is tracked by definition and LIVE would tell
+    you nothing extra. The countdown on the right is left alone, so you still
+    see when it arrives and, in red, whether to go now.
+    """
+    return flash_badge(route, color, width, "+%d" % min(late, 99), COLOR_LATE)
+
+def flash_badge(route, color, width, label, label_bg):
+    """The route, then briefly a label on its own background.
 
     Built as its own Animation. Sequence, which drives the paging, plays each
     page's animations rather than freezing them, so this keeps cycling
@@ -1066,18 +1099,18 @@ def live_badge(route, color, width):
         color = color,
         child = render.Text(content = route, font = FONT, color = text_on(color)),
     )
-    on_live = render.Box(
+    on_label = render.Box(
         width = width,
         height = 7,
-        color = COLOR_TEXT,
-        child = render.Text(content = LIVE_LABEL, font = FONT, color = "#000000"),
+        color = label_bg,
+        child = render.Text(content = label, font = FONT, color = "#000000"),
     )
 
     frames = []
     for _ in range(LIVE_FLASH_OFF):
         frames.append(on_route)
     for _ in range(LIVE_FLASH_ON):
-        frames.append(on_live)
+        frames.append(on_label)
     return render.Animation(children = frames)
 
 def wait_label(dep):
