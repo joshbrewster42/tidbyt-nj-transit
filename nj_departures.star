@@ -39,7 +39,14 @@ DATA_BASE = "https://raw.githubusercontent.com/joshbrewster42/tidbyt-nj-transit/
 #
 # Entirely optional: if it is unreachable the app loses the live marker on
 # those rows and nothing else. Set to "" to disable.
-LIVE_BASE = "https://tronbyt.brenstar.xyz/njt"
+#
+# Disabled since 2026-11-23. NJ Transit's vehicle-position feed has returned
+# "Feed file not found: GTFSRT_NJT_BUS_Vehicle_Positions.proto" since
+# 2026-10-21. By then the departure board had started keeping late buses
+# listed until they arrive, which is the gap this tier existed to fill, so it
+# is redundant even if the feed comes back. Restore the URL below and start
+# ~/njtlive on the droplet to bring it back.
+LIVE_BASE = ""
 TTL_LIVE = 20
 
 CELL_SIZE = 0.1  # must match CELL_SIZE in pipeline/build_index.py
@@ -127,6 +134,11 @@ SCAN_LIMIT = 60
 # showing a bus that left on time, which is why the window is small: with no
 # vehicle to ask, "late" and "gone" are indistinguishable.
 SCHEDULE_GRACE = 3
+
+# How far past its predicted time a board row survives. The board lists a
+# late bus until it reaches the stop, so a prediction more than this far
+# behind us means the bus has already left.
+PASSED_GRACE = 1
 
 # The same window for a row that has a vehicle behind it. Longer, because a
 # tracked bus is evidence rather than a guess: the departure feed drops a trip
@@ -457,11 +469,33 @@ def bus_departures(stop_code, now, config):
         if sched_wait != None:
             covered["%s@%d" % (route, sched_wait)] = True
 
-        # departurestatus carries the operator's own wording, which is where a
-        # bus at the kerb says so rather than showing a countdown of zero.
+        # departurestatus carries the operator's own wording: a countdown, a
+        # bus at the kerb, or one that is not coming at all.
         status = _clean(t.get("departurestatus")).lower()
-        if wait <= 0 or status.find("due") >= 0 or status.find("arriv") >= 0:
+
+        # A cancelled bus cannot be caught, so it is not shown. It has already
+        # been recorded in covered above, which matters: otherwise the
+        # timetable would put the same trip straight back on screen as a
+        # scheduled departure.
+        if status.find("cancel") >= 0:
+            continue
+
+        # Since late 2026 the board keeps a late bus listed until it reaches
+        # the stop, where it used to drop a trip the moment its scheduled
+        # minute passed. So a prediction already behind us means the bus has
+        # been and gone, and a bus that has passed this stop is no use to
+        # anyone waiting at it.
+        if wait < -PASSED_GRACE:
+            continue
+
+        at_stop = (wait <= 0 or status.find("due") >= 0 or
+                   status.find("arriv") >= 0 or status.find("aboard") >= 0 or
+                   status.find("boarding") >= 0)
+        if at_stop:
+            # Clamped so the row reads "now", never "+1": the bus is here,
+            # it is not late relative to anything shown.
             when = "now"
+            wait = 0
         else:
             when = "%d min" % wait
 
@@ -518,12 +552,12 @@ def bus_departures(stop_code, now, config):
                 break
 
     # Everything overdue was pulled in above so that a tracked bus could be
-    # recognised. Now drop the overdue rows that nothing is backing: with no
-    # vehicle, a departure this far past its time is far more likely to have
-    # gone than to be running late.
+    # recognised. Now drop the overdue rows that nothing is backing. The board
+    # holds a late bus until it arrives, so a timetable departure already past
+    # its minute and absent from the board has almost certainly gone.
     kept = []
     for dep in out:
-        if dep["live"] or dep["wait"] >= -SCHEDULE_GRACE:
+        if dep["live"] or dep["wait"] >= 0:
             kept.append(dep)
     out = kept
 
